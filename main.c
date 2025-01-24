@@ -5,6 +5,5 @@ EXPORT void thing() {
 }
 
 EXPORT void update(float dt) {
-    log_info("what the heclkasdlkfj");
-    panic("Julie!");
+    log_info("test test");
 }
