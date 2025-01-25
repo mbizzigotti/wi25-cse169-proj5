@@ -3,7 +3,13 @@
 #error "Only supporting clang compiler"
 #endif
 
+#define true  1
+#define false 0
+typedef int bool;
+
 #define EXPORT __attribute__((visibility("default")))
+#define for_n(N)  for (int i = 0; i < (N); ++i)
+#define for_(I,N) for (int I = 0; I < (N); ++I)
 
 // Web API  ***********************************************
 
