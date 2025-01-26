@@ -9,10 +9,10 @@ typedef struct {
 } Arena;
 
 #define DIM 10
+#define BOUNDARY_DAMPING_FACTOR -0.95f
+#define INFLUENCE_RADIUS         0.9f
 
-const float H = 0.5f; // smoothing radius ???
-const float K = 0.1f; // pressure constant
-const float MASS = 8.0f / (DIM * DIM * DIM);
+bool enable_sim = true;
 
 char buffer[4*1024*1024] = {0};
 
@@ -53,138 +53,152 @@ void reset_particle_system() {
         const float x = ((float)i/(float)(DIM-1) - 0.5f) * 2.0f;
         const float y = ((float)k/(float)(DIM-1) - 0.5f) * 2.0f;
         const float z = ((float)j/(float)(DIM-1) - 0.5f) * 2.0f;
-        s->position[m] = (vec3) { x, y + 1.0f, z };
+        s->position[m] = (vec3) { x, y + 0.5f, z };
         s->velocity[m] = (vec3) {};
         s->force[m] = (vec3) {};
         ++m;
     }
 }
 
-// [Monaghan, 2000]
-float weight(vec3 r) {
-    const float d = vec3_len(r);
-    const float q = d / H;
-    if (q < 0.0f || q > 2.0f) return 0.0f;
-    const float c = 4.12334035784 * H * H * H;
-    const float q4 = 1.0f - q * 0.5f;
-    return c * q4 * q4 * q4 * q4 * (2.0f * q + 1.0f);
+const float mass = 1.0f;
+
+float smoothing_kernel(float radius, float dist) {
+    if (dist > radius) return 0.0f;
+    float t = 1.0f - dist / radius;
+    return t * t * t;
 }
 
-// return true if we should skip
-bool weight_grad(vec3* out, vec3 r) {
-    const float rl = vec3_len(r);
-    const float q = rl / H;
-    if (q < 0.0f || q > 2.0f) return true;
+float smoothing_kernel_grad(float radius, float dist) {
+    if (dist > radius) return 0.0f;
+    float t = 1.0f - dist / radius;
+    return (-3.0f / radius) * t * t;
+}
 
-    const float c = 4.12334035784 * H * H * H;
-    const float t1 = 1.0f - q * 0.5f;
-    const float t3 = t1 * t1 * t1;
-    *out = vec3_mul1(r, -5.0f * c * t3 * q / rl);
-    return false;
+float kernel_volume(float radius) {
+    const float constant = 0.209439510239f; // pi / 15
+    return constant * radius * radius * radius;
+}
+
+float calculate_density(vec3 const point) {
+    Particle_System* const s = &particle_system;
+
+    float density = 0.0f;
+    for_(i,s->count) {
+        float distance = vec3_len(vec3_sub(point, s->position[i]));
+        float influence = smoothing_kernel(INFLUENCE_RADIUS, distance);
+        density += mass * influence / kernel_volume(INFLUENCE_RADIUS);
+    }
+    return density;
+}
+
+volatile float target_density = 500.0f;
+volatile float pressure_multiplier = 0.1f;
+
+float density_to_pressure(float density) {
+    float grad = target_density - density;
+    return grad * pressure_multiplier;
+}
+
+#if 0
+float calculate_property(vec3 const point) {
+    Particle_System* const s = &particle_system;
+
+    float property = 0.0f;
+    for_(i,s->count) {
+        float distance = vec3_len(vec3_sub(point, s->position[i]));
+        float influence = calculate_weight(INFLUENCE_RADIUS, distance);
+        property += s->property[i] * influence * mass / s->density[i];
+    }
+    return property / kernel_volume(INFLUENCE_RADIUS);
+}
+
+vec3 calculate_property_grad(vec3 const point) {
+    Particle_System* const s = &particle_system;
+
+    vec3 property_grad = {0};
+    for_(i,s->count) {
+        const vec3  to_point = vec3_sub(point, s->position[i]);
+        const float distance = vec3_len(to_point);
+        const float grad = smoothing_kernel_grad(INFLUENCE_RADIUS, distance);
+        property_grad = vec3_add(property_grad, s->property[i] * grad * mass / s->density[i]);
+    }
+    return property_grad;
+}
+#endif
+
+float shared_pressure(float density1, float density2) {
+    const float pressure1 = density_to_pressure(density1);
+    const float pressure2 = density_to_pressure(density2);
+    return (pressure1 + pressure2) * 0.5f;
+}
+
+vec3 calculate_pressure_force(int i) {
+    Particle_System* const s = &particle_system;
+
+    vec3 pressure_grad = {0};
+    for_(j,s->count) {
+        if (i == j) continue;
+        vec3  to_point = vec3_sub(s->position[j], s->position[i]);
+        const float distance = vec3_len(to_point);
+        if (distance == 0.0f) to_point = (vec3) {0.0f, 1.0f, 0.0f};
+        const vec3 grad = vec3_mul1(to_point, smoothing_kernel_grad(INFLUENCE_RADIUS, distance) / distance);
+        const float pressure = shared_pressure(s->density[j], s->density[i]);
+        pressure_grad = vec3_add(pressure_grad, vec3_mul1(grad, pressure * mass / s->density[j]));
+    }
+    return pressure_grad;
 }
 
 void simulation_step(float dt) {
     Particle_System* const s = &particle_system;
 
     // ! Calculate densities !
-    for_(a,s->count) {
-        float density = 0.0f;
-        for_(b,s->count) {
-            if (a == b) continue;
-            const vec3 ra = particle_system.position[a];
-            const vec3 rb = particle_system.position[b];
-            const vec3 r  = vec3_sub(ra, rb);
-            density += MASS * weight(r);
-        }
-        s->density[a] = density;
+    for_n(s->count) {
+        s->density[i] = calculate_density(s->position[i]);
+        s->velocity[i] = vec3_add(s->velocity[i], (vec3) {0.0f, -10.0f * dt, 0.0f});
     }
 
-    // ! Calculate Forces !
-    for_(a,s->count) {
-        vec3 force = {0};
-
-        for_(b,s->count) {
-            if (a == b) continue;
-            const vec3 ra = particle_system.position[a];
-            const vec3 rb = particle_system.position[b];
-            const vec3 r  = vec3_sub(ra, rb);
-
-            if (vec3_dot(r, r) < (0.001f*0.001f)) continue;
-
-            vec3 W;
-            if (weight_grad(&W, r)) continue;
-
-            const float pa = s->density[a];
-            const float pb = s->density[b];
-            
-            // Estimate pressure
-            const float Pa = K * (pa - s->reference_density);
-            const float Pb = K * (pb - s->reference_density);
-
-            vec3 pressure = vec3_mul1(W, MASS * (Pa / (pa * pa) + Pb / (pb * pb)));
-            force = vec3_sub(force, pressure);
-
-            const float mu = 0.1f;
-            const float eps = 0.001f;
-            const float rsq = vec3_dot(r, r);
-            const vec3 va = s->velocity[a];
-            const vec3 vb = s->velocity[b];
-            const float den = pb * (rsq + eps * eps);
-            const vec3 v = vec3_mul1(vec3_sub(vb, va), mu / den);
-            
-            vec3 viscosity = vec3_mul(W, v);
-            force = vec3_add(force, viscosity);
-        }
-        
-        const vec3 gravity = {0.0f, -5.0f, 0.0f};
-        s->force[a] = vec3_add(force, gravity);
+    for_n(s->count) {
+        const vec3 pressure_a = vec3_mul1(calculate_pressure_force(i), 1.0f / s->density[i]);
+        s->velocity[i] = vec3_add(s->velocity[i], pressure_a);
+        //s->velocity[i] = pressure_a;
     }
 
-    // Leap-Frog
-    const float halfdt = dt * 0.5f;
     for_n (s->count) {
-        const vec3 a = vec3_mul1(s->force[i], 1.0f / MASS);
-        const vec3 halfv = vec3_add(s->velocity[i], vec3_mul1(a, halfdt));
-        
-        vec3 position = vec3_add(s->position[i], vec3_mul1(halfv, dt));
-        vec3 velocity = vec3_add(halfv, vec3_mul1(a, halfdt));
+        vec3 position = vec3_add(s->position[i], vec3_mul1(s->velocity[i], dt));
+        vec3 velocity = s->velocity[i];
 
-        // [Parshikov et al, 2000]
-        //const float halfp = s->density[i] + s->R[i] * halfdt;
-        //const float epsilon = (s->R[i] / halfp) * dt;
-        //s->density[i] = s->density[i] * (2.0f + epsilon) / (2.0f - epsilon);
-
-        #if 1
-        if (position.y < -1.0f) {
-            position.y = -1.0f;
-            velocity.y = 0.0f;
+        if (position.y < -2.0f) {
+            position.y = -2.0f;
+            velocity.y = velocity.y * BOUNDARY_DAMPING_FACTOR;
+        }
+        else
+        if (position.y > 2.0f) {
+            position.y = 2.0f;
+            velocity.y = velocity.y * BOUNDARY_DAMPING_FACTOR;
         }
 
-        #if 0
         if (position.x < -2.0f) {
             position.x = -2.0f;
-            velocity.x = 0.0f;
+            velocity.x = velocity.x * BOUNDARY_DAMPING_FACTOR;
         }
         else
         if (position.x > 2.0f) {
             position.x = 2.0f;
-            velocity.x = 0.0f;
+            velocity.x = velocity.x * BOUNDARY_DAMPING_FACTOR;
         }
 
         if (position.z < -2.0f) {
             position.z = -2.0f;
-            velocity.z = 0.0f;
+            velocity.z = velocity.z * BOUNDARY_DAMPING_FACTOR;
         }
         else
         if (position.z > 2.0f) {
             position.z = 2.0f;
-            velocity.z = 0.0f;
+            velocity.z = velocity.z * BOUNDARY_DAMPING_FACTOR;
         }
-        #endif
-        #endif
 
-        s->velocity[i] = velocity;
         s->position[i] = position;
+        s->velocity[i] = velocity;
     }
 }
 
@@ -195,7 +209,10 @@ EXPORT void create() {
 }
 
 EXPORT void update(float dt) {
-    simulation_step(0.0001f);
+    debug_info("{} {}", &target_density);
+    if (enable_sim)
+        //for_n(4)
+            simulation_step(dt * 0.1f);
     float min = particle_system.density[0],
           max = particle_system.density[0];
     for_n (particle_system.count) {
@@ -209,9 +226,9 @@ EXPORT void update(float dt) {
         float const m = (d - min) / (max - min);
         gfx_add_particle(p.x, p.y, p.z, m);
     }
-    //for (int i = 0; i < particle_system.count; ++i) {
-    //    debug_info("den {}", &particle_system.density[i]);
-    //}
+    debug_info("min {}", &min);
+    debug_info("max {}", &max);
+    //target_density = (min + max) * 0.5f;
 }
 
 EXPORT void on_key(int key, int action) {
@@ -221,9 +238,13 @@ EXPORT void on_key(int key, int action) {
         reset_particle_system();
     }
 
-    //if (key == ' ') {
-    //    simulation_step(0.001f);
-    //}
+    if (key == ' ') {
+        enable_sim = !enable_sim;
+    }
+
+    if (key == 's') {
+        simulation_step(0.01f);
+    }
 }
 
 EXPORT float* make_view_projection(float azimuth, float incline, float distance) {

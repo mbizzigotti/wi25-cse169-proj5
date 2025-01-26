@@ -11,7 +11,6 @@ import {
     upload_buffer,
 } from "./graphics.js"
 
-let wasm = null;
 let c = null; // functions we defined in C!
 let c_bytes = null;
 let c_floats = null;
@@ -149,6 +148,8 @@ function loop(timestamp) {
         
         document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
 
+//        c_floats[c.pressure_multiplier.valueOf() >> 2] = document.getElementById("test").valueAsNumber;
+
         debug_next = 0;
         particles.length = 0;
     }
@@ -218,21 +219,21 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         gfx_add_particle,
         debug_info,
     }
-}).then((w) => {
-    wasm = w; // Web Assembly Program
+}).then((wasm) => {
     c = wasm.instance.exports; // Exported C Functions
     c_bytes  = new Uint8Array(wasm.instance.exports.memory.buffer);
     c_floats = new Float32Array(wasm.instance.exports.memory.buffer);
 
     document.addEventListener('keydown', (e) => {
         c.on_key(e.key.charCodeAt(), 1);
-        //console.log(`"${e.key.charCodeAt()}"`)
     });
     //document.addEventListener('keyup', (e) => {
     //    c.on_key(e.key.charCodeAt(), 0);
     //});
+    
+    const app = document.getElementById("app");
 
-    document.addEventListener('mousedown', (e) => {
+    app.addEventListener('mousedown', (e) => {
         touch_state.x = e.clientX;
         touch_state.y = e.clientY;
         LeftDown = true;
@@ -240,6 +241,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     document.addEventListener('mouseup', (e) => {
         LeftDown = false;
     });
+
     document.addEventListener('mouseleave', (e) => {
         LeftDown = false;
     });

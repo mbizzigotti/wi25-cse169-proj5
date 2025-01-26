@@ -1,7 +1,6 @@
 'use strict';
 
-let app = document.getElementById("app");
-export let gl = app.getContext("webgl2");
+export let gl = document.getElementById("app").getContext("webgl2");
 
 const shaders = {
     test: {
@@ -38,9 +37,13 @@ const shaders = {
 
         uniform mat4 view_proj;
 
+        vec3 heatmapGradient(float t) {
+            return clamp((pow(t, 1.5) * 0.8 + 0.2) * vec3(smoothstep(0.0, 0.35, t) + t * 0.5, smoothstep(0.5, 1.0, t), max(1.0 - t * 1.7, t * 7.0 - 6.0)), 0.0, 1.0);
+        }
+
         void main() {
             gl_Position = view_proj * vec4(v_position + i_offset.xyz, 1.0);
-            color = vec4(i_offset.a, 0.0, 1.0, 1.0);
+            color = vec4(heatmapGradient(i_offset.w), 1.0);
         }
         `,
         fragment: `#version 300 es
