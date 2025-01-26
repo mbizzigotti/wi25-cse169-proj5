@@ -3,18 +3,22 @@
 let app = document.getElementById("app");
 export let gl = app.getContext("webgl2");
 
-gl.viewport(0,0, app.clientWidth, app.clientHeight);
-
 const shaders = {
     test: {
         attributes: {
             v_position: {
                 location: null,
-                count: 2,
+                count: 3,
                 type: gl.FLOAT,
                 normalize: false,
             },
-            v_color: {
+            //i_color: {
+            //    location: null,
+            //    count: 4,
+            //    type: gl.FLOAT,
+            //    normalize: false,
+            //},
+            i_offset: {
                 location: null,
                 count: 4,
                 type: gl.FLOAT,
@@ -23,30 +27,30 @@ const shaders = {
         },
         uniforms: {
             view_proj: null,
-            alpha: null,
         },
         vertex: `#version 300 es
 
-        in vec2 v_position;
-        in vec4 v_color;
+        in vec3 v_position;
+        //in vec4 i_color;
+        in vec4 i_offset;
 
-        out vec4 vColor;
+        out vec4 color;
 
         uniform mat4 view_proj;
 
         void main() {
-            gl_Position = view_proj * vec4(v_position, 0.0, 1.0);
-            vColor = v_color;
+            gl_Position = view_proj * vec4(v_position + i_offset.xyz, 1.0);
+            color = vec4(i_offset.a, 0.0, 1.0, 1.0);
         }
         `,
         fragment: `#version 300 es
         precision mediump float;
         
-        in vec4 vColor;
+        in vec4 color;
         out vec4 fragment;
 
         void main() {
-            fragment = vec4(vColor.rgb, 1.0);
+            fragment = color;
         }
         `,
         id: 0,
@@ -97,7 +101,7 @@ const shaders = {
         out vec4 fragment;
 
         void main(void) {
-            fragment = vec4(color, 1.0);
+            fragment = vec4(color, 0.5);
         }
         `,
         id: 0,
@@ -117,7 +121,6 @@ export function compile_shaders() {
             info.uniforms[name] = gl.getUniformLocation(info.id, name);
         }
     }
-    console.log(shaders["cube"]);
 }
 
 function create_shader_program(vertex, fragment) {
@@ -149,6 +152,11 @@ function create_shader(stage, source) {
     return shader;
 }
 
+export function upload_buffer(buffer, array) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(array), gl.STATIC_DRAW);
+}
+
 export function create_vertex_buffer(arrays) {
     const buffers = {};
     for (const name in arrays) {
@@ -158,6 +166,13 @@ export function create_vertex_buffer(arrays) {
         buffers[name] = buffer;
     }
     return buffers;
+}
+
+export function create_index_buffer(array) {
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(array), gl.STATIC_DRAW);
+    return buffer;
 }
 
 export function bind_vertex_buffer(shader_name, vertex_buffer) {
@@ -173,9 +188,14 @@ export function bind_vertex_buffer(shader_name, vertex_buffer) {
             attribute.normalize,
             0, 0
         );
+        gl.vertexAttribDivisor(attribute.location, name.startsWith("i_")? 1 : 0);
         gl.enableVertexAttribArray(attribute.location);
     }
     gl.useProgram(shader.id);
+}
+
+export function bind_index_buffer(shader_name, index_buffer) {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
 }
 
 export function get_uniform(shader_name, uniform_name) {

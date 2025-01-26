@@ -15,10 +15,21 @@
             touch-action: none;
             /* border: 10px solid black; */
         }
+        #debug {
+            position: absolute;
+            top: 0;
+            left: 0;
+            color: white;
+            font-family: monospace;
+            padding: 0.5em;
+        }
     </style>
   </head>
   <body>
     <canvas id="app" width=500 height=500></canvas>
+    <div id="debug">
+        <div id="FPS"></div>
+    </div>
     <script type="module" src="main.js"></script>
   </body>
 </html>

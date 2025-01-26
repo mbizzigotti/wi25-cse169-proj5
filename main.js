@@ -5,7 +5,10 @@ import {
     compile_shaders,
     create_vertex_buffer,
     bind_vertex_buffer,
+    bind_index_buffer,
     get_uniform,
+    create_index_buffer,
+    upload_buffer,
 } from "./graphics.js"
 
 let wasm = null;
@@ -14,6 +17,7 @@ let c_bytes = null;
 let c_floats = null;
 let want_exit = false;
 
+const HALF_PI = 1.5707963267948966;
 
 //////////////////////////////////////////////////////////////////////////////
 // Helper functions to interface with C from this terrible terrible language
@@ -64,48 +68,137 @@ function cos(x) {
     return Math.cos(x);
 }
 
+function sqrt(x) {
+    return Math.sqrt(x);
+}
+
+const particles = []
+const particle_size = 4; // 3 x position
+
+function gfx_add_particle(x, y, z, c) {
+    particles.push(x, y, z, c);
+}
+
+const debug_elements = [];
+let debug_next = 0;
+
+function debug_info(format, args) {
+    if (debug_next >= debug_elements.length) {
+        const debug = document.getElementById("debug");
+        const debug_text = document.createElement("div");
+        debug_text.className = "debug-text";
+        debug_elements.push(debug_text);
+        debug.appendChild(debug_text)
+    }
+
+    const base = args >> 2; // want an index (float = 4 bytes)
+    const array = c_floats.slice(base, base + 16); // estimate count
+    
+    const format_string = (format, args) => {
+        let argIndex = 0;
+        return format.replace(/{}/g, () => {
+            if (argIndex >= args.length) return "{empty}";
+            return args[argIndex++];
+        });
+    };
+
+    debug_elements[debug_next].textContent = format_string(c_string(format), array);
+    debug_next += 1;
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 
 let vertex_buffer = null;
+let sphere = null;
+
+const camera = {
+    azimuth: 0.0,
+    incline: 0.0,
+    distance: 10.0,
+};
 
 let prev = null;
 function loop(timestamp) {
     if (prev !== null) {
-        //wasm.instance.exports.update((timestamp - prev)*0.001);
+        const dt = (timestamp - prev)*0.001;
+
+        c.update(dt);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    
-        bind_vertex_buffer("test", vertex_buffer);
-    
-        const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline));
+        
+        const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline, camera.distance));
         const model = new Float32Array([
             4.0, 0.0, 0.0, 0.0,
             0.0, 4.0, 0.0, 0.0,
             0.0, 0.0, 4.0, 0.0,
             0.0, 0.0, 0.0, 1.0,
         ]);
-        //console.log(camera, view_proj);
-        //gl.uniformMatrix4fv(get_uniform("test", "view_proj"), true, view_proj);
-        //gl.uniform1f(get_uniform("test", "alpha"), 1.0);
-        //gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        const particle_count = particles.length / particle_size;
+        upload_buffer(sphere.vertex_buffer.i_offset, particles);
         
-        bind_vertex_buffer("cube", {});
-        gl.uniformMatrix4fv(get_uniform("cube", "view_proj"), true, view_proj);
-        gl.uniformMatrix4fv(get_uniform("cube", "model"), true, model);
-        gl.drawArrays(gl.TRIANGLES, 0, 36);
+        bind_index_buffer("test", sphere.index_buffer);
+        bind_vertex_buffer("test", sphere.vertex_buffer);
+        gl.uniformMatrix4fv(get_uniform("test", "view_proj"), true, view_proj);
+        gl.drawElementsInstanced(gl.TRIANGLES, sphere.index_count, gl.UNSIGNED_INT, 0, particle_count);
+        
+        //bind_vertex_buffer("cube", {});
+        //gl.uniformMatrix4fv(get_uniform("cube", "view_proj"), true, view_proj);
+        //gl.uniformMatrix4fv(get_uniform("cube", "model"), true, model);
+        //gl.drawArrays(gl.TRIANGLES, 0, 36);
+        
+        document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
+
+        debug_next = 0;
+        particles.length = 0;
     }
     prev = timestamp;
     if (!want_exit) window.requestAnimationFrame(loop);
 }
 
+function generate_sphere(radius, latitudeBands, longitudeBands) {
+    const vertices = [];
+    const indices = [];
+
+    // Generate vertex positions
+    for (let lat = 0; lat <= latitudeBands; lat++) {
+        const theta = (lat * Math.PI) / latitudeBands; // Latitude angle (0 to PI)
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+
+        for (let lon = 0; lon <= longitudeBands; lon++) {
+            const phi = (lon * 2 * Math.PI) / longitudeBands; // Longitude angle (0 to 2PI)
+            const sinPhi = Math.sin(phi);
+            const cosPhi = Math.cos(phi);
+
+            // Compute vertex position
+            const x = radius * sinTheta * cosPhi;
+            const y = radius * cosTheta;
+            const z = radius * sinTheta * sinPhi;
+
+            // Add the vertex
+            vertices.push(x, y, z);
+        }
+    }
+
+    // Generate indices
+    for (let lat = 0; lat < latitudeBands; lat++) {
+        for (let lon = 0; lon < longitudeBands; lon++) {
+            const first = lat * (longitudeBands + 1) + lon;
+            const second = first + longitudeBands + 1;
+
+            // Create two triangles for each grid square
+            indices.push(first, first + 1, second);
+            indices.push(second, first + 1, second + 1);
+        }
+    }
+
+    return [vertices, indices];
+}
+
 function clamp(x, a, b) {
     return x < a ? a : x > b ? b : x;
 }
-
-const camera = {
-    azimuth: 0.0,
-    incline: 0.0,
-};
 
 const touch_state = {
     x: 0,
@@ -113,6 +206,7 @@ const touch_state = {
 };
 
 let LeftDown = false;
+let Touching = false;
 
 WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     env: {
@@ -120,23 +214,33 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         panic,
         sin,
         cos,
+        sqrt,
+        gfx_add_particle,
+        debug_info,
     }
 }).then((w) => {
-    wasm = w;
-    c = wasm.instance.exports;
+    wasm = w; // Web Assembly Program
+    c = wasm.instance.exports; // Exported C Functions
     c_bytes  = new Uint8Array(wasm.instance.exports.memory.buffer);
     c_floats = new Float32Array(wasm.instance.exports.memory.buffer);
 
-    c.thing();
-
     document.addEventListener('keydown', (e) => {
-        wasm.instance.exports.game_keydown(e.key.charCodeAt());
+        c.on_key(e.key.charCodeAt(), 1);
+        //console.log(`"${e.key.charCodeAt()}"`)
     });
+    //document.addEventListener('keyup', (e) => {
+    //    c.on_key(e.key.charCodeAt(), 0);
+    //});
 
     document.addEventListener('mousedown', (e) => {
+        touch_state.x = e.clientX;
+        touch_state.y = e.clientY;
         LeftDown = true;
     });
     document.addEventListener('mouseup', (e) => {
+        LeftDown = false;
+    });
+    document.addEventListener('mouseleave', (e) => {
         LeftDown = false;
     });
 
@@ -152,32 +256,61 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         if (LeftDown) {
             const rate = 0.01;
             camera.azimuth = camera.azimuth + dx * rate;
-            camera.incline = clamp(camera.incline - dy * rate, -90.0, 90.0);
-            //console.log(camera);
+            camera.incline = clamp(camera.incline - dy * rate, -HALF_PI, HALF_PI);
         }
     });
 
-    compile_shaders();
+    document.addEventListener('touchstart', (e) => {
+        touch_state.x = e.touches[0].clientX;
+        touch_state.y = e.touches[0].clientY;
+        Touching = true;
+    });
+    document.addEventListener('touchend',   (e) => { Touching = false; });
 
-    vertex_buffer = create_vertex_buffer({
-        v_position: [
-             1.0,  1.0,
-            -1.0,  1.0,
-             1.0, -1.0,
-            -1.0, -1.0
-        ],
-        v_color: [
-            1.0, 1.0, 1.0, 1.0, // white
-            1.0, 0.0, 0.0, 1.0, // red
-            0.0, 1.0, 0.0, 1.0, // green
-            0.0, 0.0, 1.0, 1.0, // blue
-        ],
+    document.addEventListener('touchmove', (e) => {
+        const maxDelta = 100;
+        const dx = clamp(  e.touches[0].clientX - touch_state.x,  -maxDelta, maxDelta);
+        const dy = clamp(-(e.touches[0].clientY - touch_state.y), -maxDelta, maxDelta);
+    
+        touch_state.x = e.touches[0].clientX;
+        touch_state.y = e.touches[0].clientY;
+    
+        if (Touching) {
+            const rate = 0.01;
+            camera.azimuth = camera.azimuth + dx * rate;
+            camera.incline = clamp(camera.incline - dy * rate, -HALF_PI, HALF_PI);
+        }
     });
 
-    gl.clearColor(0.0, 0.0, 0.0, 1.0); // Clear to black, fully opaque
-    gl.clearDepth(1.0); // Clear everything
-    gl.enable(gl.DEPTH_TEST); // Enable depth testing
+    document.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        camera.distance -= 0.01 * e.deltaY;
+    });
+
+    compile_shaders();
+    
+    const [vertices, indices] = generate_sphere(0.1, 24, 24);
+
+    sphere = {
+        vertex_buffer: create_vertex_buffer({
+            v_position: vertices,
+        //    i_color: [],
+            i_offset: [],
+        }),
+        index_buffer: create_index_buffer(indices),
+        index_count: indices.length,
+    };
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.clearDepth(1.0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+
+    c.create();
   
     window.requestAnimationFrame(loop);
 });

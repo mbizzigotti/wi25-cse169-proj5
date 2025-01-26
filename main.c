@@ -1,205 +1,233 @@
 #include "config.h"
-
-// original: https://andrewkay.name/blog/post/efficiently-approximating-tan-x/
-// author: Andrew Kay
-// approximation of tan with lower relative error
-static inline float tan(float x) {
-    const float pisqby4 = 2.4674011002723397f;
-    const float adjpisqby4 = 2.471688400562703f;
-    const float adj1minus8bypisq = 0.189759681063053f;
-    const float xsq = x * x;
-    return x * (adjpisqby4 - adj1minus8bypisq * xsq) / (pisqby4 - xsq);
-}
-
-extern float cos(float x);
-extern float sin(float x);
-extern float sqrt(float x);
-//static inline float cos(float x) {
-//    const float tausq = 39.4784176044;
-//    const float x4sq = 4.0f * x * x;
-//    return 1.0f - (5.0f * x4sq) / (x4sq + tausq);
-//}
-//
-//static inline float sin(float x) {
-//    const float cosx = cos(x);
-//    return 1.0f - cosx * cosx;
-//}
-
-EXPORT void thing() {
-    log_error("what is this??");
-}
-
-EXPORT void update(float dt) {
-    log_info("test test");
-}
+#include "math.c"
+#include "util.c"
 
 typedef struct {
-    float x, y, z, w;
-} vec4;
+    void* base;
+    int   allocated;
+    int   capacity;
+} Arena;
 
-typedef float mat4[16];
+#define DIM 10
 
-#define I(row, col) (row * 4 + col)
-#define set_row(M, row, x, y, z, w) \
-    ((vec4*)(M))[row] = (vec4) {x, y, z, w}
+const float H = 0.5f; // smoothing radius ???
+const float K = 0.1f; // pressure constant
+const float MASS = 8.0f / (DIM * DIM * DIM);
 
-void mat4_zero(float* dst) {
-    for (int i = 0; i < 16; ++i)
-        dst[i] = 0.0f;
+char buffer[4*1024*1024] = {0};
+
+Particle_System particle_system;
+Arena arena = (Arena) {
+    .base = buffer,
+    .allocated = 0,
+    .capacity = sizeof(buffer),
+};
+
+#define allocateT(arena, type, count) \
+    allocate(arena, count * sizeof(type))
+
+void* allocate(Arena* arena, int size) {
+    void* out = arena->base + arena->allocated;
+    arena->allocated += size;
+    return out;
 }
 
-void mat4_identity(float* dst) {
-    for (int i = 0; i < 16; ++i)
-        dst[i] = 0.0f;
-
-    dst[I(0,0)] = 1.0f;
-    dst[I(1,1)] = 1.0f;
-    dst[I(2,2)] = 1.0f;
-    dst[I(3,3)] = 1.0f;
+void create_particle_system() {
+    Particle_System* const s = &particle_system;
+    s->count = DIM * DIM * DIM;
+    s->position = allocateT(&arena, vec3, s->count);
+    s->velocity = allocateT(&arena, vec3, s->count);
+    s->force    = allocateT(&arena, vec3, s->count);
+    s->density  = allocateT(&arena, float, s->count);
+    //s->mass     = allocateT(&arena, float, s->count);
+    //s->pressure = allocateT(&arena, float, s->count);
+    //s->R        = allocateT(&arena, float, s->count);
 }
 
-// dst <- inv(m)
-bool mat3_inverse(float* dst, float* m) {
-    float det = m[I(0,0)] * (m[I(1,1)] * m[I(2,2)] - m[I(2,1)] * m[I(1,2)]) -
-                m[I(0,1)] * (m[I(1,0)] * m[I(2,2)] - m[I(1,2)] * m[I(2,0)]) +
-                m[I(0,2)] * (m[I(1,0)] * m[I(2,1)] - m[I(1,1)] * m[I(2,0)]);
+void reset_particle_system() {
+    Particle_System* const s = &particle_system;
+    s->reference_density = 1.0f;
 
-    if (det == 0) return true;
+    int m = 0;
+    for_(i,DIM) for_(j,DIM) for_(k,DIM) {
+        const float x = ((float)i/(float)(DIM-1) - 0.5f) * 2.0f;
+        const float y = ((float)k/(float)(DIM-1) - 0.5f) * 2.0f;
+        const float z = ((float)j/(float)(DIM-1) - 0.5f) * 2.0f;
+        s->position[m] = (vec3) { x, y + 1.0f, z };
+        s->velocity[m] = (vec3) {};
+        s->force[m] = (vec3) {};
+        ++m;
+    }
+}
 
-    float invdet = 1.0f / det;
+// [Monaghan, 2000]
+float weight(vec3 r) {
+    const float d = vec3_len(r);
+    const float q = d / H;
+    if (q < 0.0f || q > 2.0f) return 0.0f;
+    const float c = 4.12334035784 * H * H * H;
+    const float q4 = 1.0f - q * 0.5f;
+    return c * q4 * q4 * q4 * q4 * (2.0f * q + 1.0f);
+}
 
-    dst[I(0,0)] = (m[I(1,1)] * m[I(2,2)] - m[I(2,1)] * m[I(1,2)]) * invdet;
-    dst[I(0,1)] = (m[I(0,2)] * m[I(2,1)] - m[I(0,1)] * m[I(2,2)]) * invdet;
-    dst[I(0,2)] = (m[I(0,1)] * m[I(1,2)] - m[I(0,2)] * m[I(1,1)]) * invdet;
-    dst[I(1,0)] = (m[I(1,2)] * m[I(2,0)] - m[I(1,0)] * m[I(2,2)]) * invdet;
-    dst[I(1,1)] = (m[I(0,0)] * m[I(2,2)] - m[I(0,2)] * m[I(2,0)]) * invdet;
-    dst[I(1,2)] = (m[I(1,0)] * m[I(0,2)] - m[I(0,0)] * m[I(1,2)]) * invdet;
-    dst[I(2,0)] = (m[I(1,0)] * m[I(2,1)] - m[I(2,0)] * m[I(1,1)]) * invdet;
-    dst[I(2,1)] = (m[I(2,0)] * m[I(0,1)] - m[I(0,0)] * m[I(2,1)]) * invdet;
-    dst[I(2,2)] = (m[I(0,0)] * m[I(1,1)] - m[I(1,0)] * m[I(0,1)]) * invdet;
+// return true if we should skip
+bool weight_grad(vec3* out, vec3 r) {
+    const float rl = vec3_len(r);
+    const float q = rl / H;
+    if (q < 0.0f || q > 2.0f) return true;
 
+    const float c = 4.12334035784 * H * H * H;
+    const float t1 = 1.0f - q * 0.5f;
+    const float t3 = t1 * t1 * t1;
+    *out = vec3_mul1(r, -5.0f * c * t3 * q / rl);
     return false;
 }
 
-void mat4_transpose(float* dst) {
-	for_(i,4) {
-		for(int j = i + 1; j < 4; ++j) {
-            float temp = dst[I(i,j)];
-			dst[I(i,j)] = dst[I(j,i)];
-            dst[I(j,i)] = temp;
-		}
-	}
-}
+void simulation_step(float dt) {
+    Particle_System* const s = &particle_system;
 
-float mat4_minor(float* m, int c, int r) {
-	mat4 p;
-
-	for_(i,3) {
-		const int col = (i < c)? i : i+1;
-		for_(j,3) {
-			const int row = (j < r)? j : j+1;
-			p[I(i,j)] = m[I(col,row)];
-		}
-	}
-    
-	const float x0 = +p[I(0,0)] * (p[I(1,1)] * p[I(2,2)] - p[I(1,2)] * p[I(2,1)]);
-	const float x1 = -p[I(0,1)] * (p[I(1,0)] * p[I(2,2)] - p[I(1,2)] * p[I(2,0)]);
-	const float x2 = +p[I(0,2)] * (p[I(1,0)] * p[I(2,1)] - p[I(1,1)] * p[I(2,0)]);
-	return x0 + x1 + x2;
-}
-
-float mat4_cofactor(float* m, int i, int j) {
-	const float sign = ((i + j) % 2 == 0)? 1.0f : -1.0f;
-	return sign * mat4_minor(m, i, j);
-}
-
-void mat4_adjoint(float* dst, float* m) {
-	for_(i,4) {
-		for_(j,4) {
-			dst[I(i,j)] = mat4_cofactor(m, i, j);
-		}
-	}
-}
-
-void mat4_inverse_transpose(float* dst, float* m) {
-    mat4 adjoint;
-    mat4_adjoint(adjoint, m);
-
-	float determinant = 0.0f;
-	for_n(4) {
-		determinant += m[I(i,0)] * adjoint[I(i,0)];
-	}
-	const float inv_det = 1.0 / determinant;
-	for_(i,4) {
-		for_(j,4) {
-			dst[I(i,j)] = adjoint[I(i,j)] * inv_det;
-		}
-	}
-}
-
-void mat4_inverse(float* dst, float* m) {
-    mat4_inverse_transpose(dst, m);
-    mat4_transpose(dst);
-}
-
-// a <- a * b
-void mat4_multiply(float* a, float* b) {
-    float temp[16];
-    for (int i = 0; i < 4; ++i)
-    for (int j = 0; j < 4; ++j) {
-        float value = 0.0f;
-        for (int k = 0; k < 4; ++k)
-            value += a[I(i,k)] * b[I(k,j)];
-        temp[I(i,j)] = value;
+    // ! Calculate densities !
+    for_(a,s->count) {
+        float density = 0.0f;
+        for_(b,s->count) {
+            if (a == b) continue;
+            const vec3 ra = particle_system.position[a];
+            const vec3 rb = particle_system.position[b];
+            const vec3 r  = vec3_sub(ra, rb);
+            density += MASS * weight(r);
+        }
+        s->density[a] = density;
     }
-    for (int i = 0; i < 16; ++i)
-        a[i] = temp[i];
+
+    // ! Calculate Forces !
+    for_(a,s->count) {
+        vec3 force = {0};
+
+        for_(b,s->count) {
+            if (a == b) continue;
+            const vec3 ra = particle_system.position[a];
+            const vec3 rb = particle_system.position[b];
+            const vec3 r  = vec3_sub(ra, rb);
+
+            if (vec3_dot(r, r) < (0.001f*0.001f)) continue;
+
+            vec3 W;
+            if (weight_grad(&W, r)) continue;
+
+            const float pa = s->density[a];
+            const float pb = s->density[b];
+            
+            // Estimate pressure
+            const float Pa = K * (pa - s->reference_density);
+            const float Pb = K * (pb - s->reference_density);
+
+            vec3 pressure = vec3_mul1(W, MASS * (Pa / (pa * pa) + Pb / (pb * pb)));
+            force = vec3_sub(force, pressure);
+
+            const float mu = 0.1f;
+            const float eps = 0.001f;
+            const float rsq = vec3_dot(r, r);
+            const vec3 va = s->velocity[a];
+            const vec3 vb = s->velocity[b];
+            const float den = pb * (rsq + eps * eps);
+            const vec3 v = vec3_mul1(vec3_sub(vb, va), mu / den);
+            
+            vec3 viscosity = vec3_mul(W, v);
+            force = vec3_add(force, viscosity);
+        }
+        
+        const vec3 gravity = {0.0f, -5.0f, 0.0f};
+        s->force[a] = vec3_add(force, gravity);
+    }
+
+    // Leap-Frog
+    const float halfdt = dt * 0.5f;
+    for_n (s->count) {
+        const vec3 a = vec3_mul1(s->force[i], 1.0f / MASS);
+        const vec3 halfv = vec3_add(s->velocity[i], vec3_mul1(a, halfdt));
+        
+        vec3 position = vec3_add(s->position[i], vec3_mul1(halfv, dt));
+        vec3 velocity = vec3_add(halfv, vec3_mul1(a, halfdt));
+
+        // [Parshikov et al, 2000]
+        //const float halfp = s->density[i] + s->R[i] * halfdt;
+        //const float epsilon = (s->R[i] / halfp) * dt;
+        //s->density[i] = s->density[i] * (2.0f + epsilon) / (2.0f - epsilon);
+
+        #if 1
+        if (position.y < -1.0f) {
+            position.y = -1.0f;
+            velocity.y = 0.0f;
+        }
+
+        #if 0
+        if (position.x < -2.0f) {
+            position.x = -2.0f;
+            velocity.x = 0.0f;
+        }
+        else
+        if (position.x > 2.0f) {
+            position.x = 2.0f;
+            velocity.x = 0.0f;
+        }
+
+        if (position.z < -2.0f) {
+            position.z = -2.0f;
+            velocity.z = 0.0f;
+        }
+        else
+        if (position.z > 2.0f) {
+            position.z = 2.0f;
+            velocity.z = 0.0f;
+        }
+        #endif
+        #endif
+
+        s->velocity[i] = velocity;
+        s->position[i] = position;
+    }
 }
 
-void mat4_euler_angle_x(float* dst, float theta) {
-    const float sint = sin(theta);
-    const float cost = cos(theta);
-    set_row(dst, 0, 1.0f, 0.0f, 0.0f, 0.0f);
-    set_row(dst, 1, 0.0f, cost,-sint, 0.0f);
-    set_row(dst, 2, 0.0f, sint, cost, 0.0f);
-    set_row(dst, 3, 0.0f, 0.0f, 0.0f, 1.0f);
+EXPORT void create() {
+    create_particle_system();
+    reset_particle_system();
+    log_info("Created particle system");
 }
 
-void mat4_euler_angle_y(float* dst, float theta) {
-    const float sint = sin(theta);
-    const float cost = cos(theta);
-    set_row(dst, 0, cost, 0.0f, sint, 0.0f);
-    set_row(dst, 1, 0.0f, 1.0f, 0.0f, 0.0f);
-    set_row(dst, 2,-sint, 0.0f, cost, 0.0f);
-    set_row(dst, 3, 0.0f, 0.0f, 0.0f, 1.0f);
+EXPORT void update(float dt) {
+    simulation_step(0.0001f);
+    float min = particle_system.density[0],
+          max = particle_system.density[0];
+    for_n (particle_system.count) {
+        float const d = particle_system.density[i];
+        if (d < min) min = d;
+        if (d > max) max = d;
+    }
+    for_n (particle_system.count) {
+        vec3 const p = particle_system.position[i];
+        float const d = particle_system.density[i];
+        float const m = (d - min) / (max - min);
+        gfx_add_particle(p.x, p.y, p.z, m);
+    }
+    //for (int i = 0; i < particle_system.count; ++i) {
+    //    debug_info("den {}", &particle_system.density[i]);
+    //}
 }
 
-void mat4_projection(float* dst, float fov, float aspect, float near, float far) {
-    mat4_zero(dst);
-    const float tanhalffov = tan(0.5f * fov);
-	dst[I(0,0)] = 1.0f / (aspect*tanhalffov);
-	dst[I(1,1)] = 1.0f / (tanhalffov);
-	dst[I(2,2)] = -(far + near) / (far - near);
-	dst[I(3,2)] = -1.0f;
-	dst[I(2,3)] = -2.0f*far*near / (far - near);
+EXPORT void on_key(int key, int action) {
+    if (action != KEY_DOWN) return;
+
+    if (key == 'r') {
+        reset_particle_system();
+    }
+
+    //if (key == ' ') {
+    //    simulation_step(0.001f);
+    //}
 }
 
-EXPORT float* make_view_projection(float azimuth, float incline) {
-/*  
-    world = glm.identity(glm.mat4)
-    world[3][2] = distance
-    world = math.matrix4_from_euler_angle_y(glm.radians(azimuth)) \
-          * math.matrix4_from_euler_angle_x(glm.radians(incline)) \
-          * world;
-    view := world
-    project := math.matrix4_perspective(glm.radians(fov), aspect, near, far);
-    return view, project;
-
-*/
-    const float distance = 10.0f;
-
-    static float world[16];
-    static float temp[16];
+EXPORT float* make_view_projection(float azimuth, float incline, float distance) {
+    mat4 world, temp;
 
     mat4_euler_angle_y(temp, -azimuth);
     mat4_euler_angle_x(world, -incline);
@@ -216,5 +244,3 @@ EXPORT float* make_view_projection(float azimuth, float incline) {
 
     return projection;
 }
-
-#undef I
