@@ -104,7 +104,7 @@ const shaders = {
         out vec4 fragment;
 
         void main(void) {
-            fragment = vec4(color, 0.5);
+            fragment = vec4(vec3(1.0), 0.2);
         }
         `,
         id: 0,

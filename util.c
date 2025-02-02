@@ -1,6 +1,7 @@
 #include "config.h"
 
 #define DEFAULT_SEED 0xACE1u
+#define RAND_MAX     0xFFFFu
 
 unsigned short seed = DEFAULT_SEED;
 

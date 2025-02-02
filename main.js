@@ -54,6 +54,10 @@ function log(priority, message) {
     log[priority](c_string(message));
 }
 
+function log_value(value) {
+    console.log(value);
+}
+
 function panic(message) {
     console.error(c_string(message));
     want_exit = true;
@@ -105,6 +109,63 @@ function debug_info(format, args) {
     debug_next += 1;
 }
 
+function add_slider(label, value_address) {
+    const controls = document.getElementById("controls");
+    
+    // Create a container for the slider
+    const sliderContainer = document.createElement("div");
+    sliderContainer.style.display = "flex";
+    sliderContainer.style.alignItems = "center";
+    sliderContainer.style.gap = "10px";
+    sliderContainer.style.width = "100%";
+    
+    // Create label for the slider
+    const label_element = document.createElement("label");
+    label_element.textContent = c_string(label);
+    label_element.style.minWidth = "300px";
+    label_element.style.textAlign = "right";
+    label_element.style.pointerEvents = "none"; // Allow touch/mouse events to fall through
+    
+    // Create the slider input
+    const slider = document.createElement("input");
+    const index = value_address >> 2; // want an index (float = 4 bytes)
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = "100";
+    slider.value = c_floats[index].toFixed(3);
+    slider.style.width = "200px";
+    
+    // Create span to show the value
+    const valueDisplay = document.createElement("input");
+    valueDisplay.type = "text";
+    valueDisplay.value = c_floats[index].toFixed(3);
+    valueDisplay.style.width = "50px";
+    valueDisplay.style.textAlign = "center";
+
+    const set_value = (value) => {
+        c_floats[index] = parseFloat(value);
+        valueDisplay.value = value;
+    };
+
+    // Update slider when valueDisplay changes
+    valueDisplay.addEventListener("change", function () {
+        set_value(valueDisplay.value);
+    });
+    
+    // Update value when slider changes
+    slider.addEventListener("input", function () {
+        set_value(slider.value);
+    });
+    
+    // Append elements to container
+    sliderContainer.appendChild(label_element);
+    sliderContainer.appendChild(slider);
+    sliderContainer.appendChild(valueDisplay);
+    
+    // Append slider container to controls
+    controls.appendChild(sliderContainer);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 
@@ -136,15 +197,17 @@ function loop(timestamp) {
         const particle_count = particles.length / particle_size;
         upload_buffer(sphere.vertex_buffer.i_offset, particles);
         
+        gl.disable(gl.DEPTH_TEST);
+        bind_vertex_buffer("cube", {});
+        gl.uniformMatrix4fv(get_uniform("cube", "view_proj"), true, view_proj);
+        gl.uniformMatrix4fv(get_uniform("cube", "model"), true, model);
+        gl.drawArrays(gl.TRIANGLES, 0, 36);
+        
+        gl.enable(gl.DEPTH_TEST);
         bind_index_buffer("test", sphere.index_buffer);
         bind_vertex_buffer("test", sphere.vertex_buffer);
         gl.uniformMatrix4fv(get_uniform("test", "view_proj"), true, view_proj);
         gl.drawElementsInstanced(gl.TRIANGLES, sphere.index_count, gl.UNSIGNED_INT, 0, particle_count);
-        
-        //bind_vertex_buffer("cube", {});
-        //gl.uniformMatrix4fv(get_uniform("cube", "view_proj"), true, view_proj);
-        //gl.uniformMatrix4fv(get_uniform("cube", "model"), true, model);
-        //gl.drawArrays(gl.TRIANGLES, 0, 36);
         
         document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
 
@@ -218,6 +281,8 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         sqrt,
         gfx_add_particle,
         debug_info,
+        add_slider,
+        log_value,
     }
 }).then((wasm) => {
     c = wasm.instance.exports; // Exported C Functions
@@ -285,13 +350,12 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     });
 
     document.addEventListener('wheel', (e) => {
-        e.preventDefault();
         camera.distance -= 0.01 * e.deltaY;
     });
 
     compile_shaders();
     
-    const [vertices, indices] = generate_sphere(0.1, 24, 24);
+    const [vertices, indices] = generate_sphere(0.05, 24, 24);
 
     sphere = {
         vertex_buffer: create_vertex_buffer({

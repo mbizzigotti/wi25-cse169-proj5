@@ -8,9 +8,13 @@ typedef struct {
     int   capacity;
 } Arena;
 
-#define DIM 10
-#define BOUNDARY_DAMPING_FACTOR -0.95f
-#define INFLUENCE_RADIUS         0.9f
+#define DIM 8
+#define BOUNDARY_DAMPING_FACTOR -0.50f
+
+float target_density      = 50.0f;
+float pressure_multiplier =  0.0f;
+float influence_radius    =  0.2f;
+float gravity             =  0.0f;
 
 bool enable_sim = true;
 
@@ -50,10 +54,18 @@ void reset_particle_system() {
 
     int m = 0;
     for_(i,DIM) for_(j,DIM) for_(k,DIM) {
+    #if 0
         const float x = ((float)i/(float)(DIM-1) - 0.5f) * 2.0f;
-        const float y = ((float)k/(float)(DIM-1) - 0.5f) * 2.0f;
+        const float y = ((float)k/(float)(DIM-1) - 0.5f) * 2.0f + 0.5f;
         const float z = ((float)j/(float)(DIM-1) - 0.5f) * 2.0f;
-        s->position[m] = (vec3) { x, y + 0.5f, z };
+    #else
+        const float x = randf() * 2.0f - 1.0f;
+        //const float y = randf();
+        //const float z = randf();
+        const float y = ((float)k/(float)(DIM-1) - 0.5f) * 2.0f + 0.5f;
+        const float z = ((float)j/(float)(DIM-1) - 0.5f) * 2.0f;
+    #endif
+        s->position[m] = (vec3) { x, y, z };
         s->velocity[m] = (vec3) {};
         s->force[m] = (vec3) {};
         ++m;
@@ -63,20 +75,29 @@ void reset_particle_system() {
 const float mass = 1.0f;
 
 float smoothing_kernel(float radius, float dist) {
-    if (dist > radius) return 0.0f;
-    float t = 1.0f - dist / radius;
-    return t * t * t;
+    const float q = dist / radius;
+    if (q >= 2.0f) return 0.0f;
+
+    const float t0 = 1.0f - q * 0.5f;
+    const float t1 = 2.0f * q + 1.0f;
+
+    return t0 * t0 * t0 * t0 * t1;
 }
 
 float smoothing_kernel_grad(float radius, float dist) {
-    if (dist > radius) return 0.0f;
-    float t = 1.0f - dist / radius;
-    return (-3.0f / radius) * t * t;
+    const float q = dist / radius;
+    if (q >= 2.0f) return 0.0f;
+
+    const float t0 = 1.0f - q * 0.5f;
+    const float t1 = 2.0f * q + 1.0f;
+    const float t2 = t0 * t0 * t0;
+
+    return 2.0f * t2 * (t0 - t1);
 }
 
 float kernel_volume(float radius) {
-    const float constant = 0.209439510239f; // pi / 15
-    return constant * radius * radius * radius;
+    const float constant = 0.557042300822f; // 7 / 4pi
+    return constant / radius * radius;
 }
 
 float calculate_density(vec3 const point) {
@@ -85,17 +106,14 @@ float calculate_density(vec3 const point) {
     float density = 0.0f;
     for_(i,s->count) {
         float distance = vec3_len(vec3_sub(point, s->position[i]));
-        float influence = smoothing_kernel(INFLUENCE_RADIUS, distance);
-        density += mass * influence / kernel_volume(INFLUENCE_RADIUS);
+        float influence = smoothing_kernel(influence_radius, distance);
+        density += mass * influence;
     }
-    return density;
+    return density / kernel_volume(influence_radius);
 }
 
-volatile float target_density = 500.0f;
-volatile float pressure_multiplier = 0.1f;
-
 float density_to_pressure(float density) {
-    float grad = target_density - density;
+    float grad = density - target_density;
     return grad * pressure_multiplier;
 }
 
@@ -138,11 +156,12 @@ vec3 calculate_pressure_force(int i) {
     vec3 pressure_grad = {0};
     for_(j,s->count) {
         if (i == j) continue;
-        vec3  to_point = vec3_sub(s->position[j], s->position[i]);
+        vec3 to_point = vec3_sub(s->position[j], s->position[i]);
         const float distance = vec3_len(to_point);
-        if (distance == 0.0f) to_point = (vec3) {0.0f, 1.0f, 0.0f};
-        const vec3 grad = vec3_mul1(to_point, smoothing_kernel_grad(INFLUENCE_RADIUS, distance) / distance);
+        if (distance == 0.0f) to_point = (vec3) {1.0f, 0.0f, 0.0f};
+        const vec3 grad = vec3_mul1(to_point, smoothing_kernel_grad(influence_radius, distance) / distance);
         const float pressure = shared_pressure(s->density[j], s->density[i]);
+        if (s->density[i] != 0.0f)
         pressure_grad = vec3_add(pressure_grad, vec3_mul1(grad, pressure * mass / s->density[j]));
     }
     return pressure_grad;
@@ -154,13 +173,13 @@ void simulation_step(float dt) {
     // ! Calculate densities !
     for_n(s->count) {
         s->density[i] = calculate_density(s->position[i]);
-        s->velocity[i] = vec3_add(s->velocity[i], (vec3) {0.0f, -10.0f * dt, 0.0f});
     }
 
     for_n(s->count) {
-        const vec3 pressure_a = vec3_mul1(calculate_pressure_force(i), 1.0f / s->density[i]);
-        s->velocity[i] = vec3_add(s->velocity[i], pressure_a);
-        //s->velocity[i] = pressure_a;
+        const vec3 pressure_a = vec3_mul1(calculate_pressure_force(i), dt / s->density[i]);
+        //s->velocity[i] = vec3_add(s->velocity[i], (vec3) {0.0f, gravity, 0.0f});
+        //s->velocity[i] = vec3_add(s->velocity[i], pressure_a);
+        s->velocity[i] = pressure_a;
     }
 
     for_n (s->count) {
@@ -206,15 +225,19 @@ EXPORT void create() {
     create_particle_system();
     reset_particle_system();
     log_info("Created particle system");
+
+    add_slider("Influence Radius",    &influence_radius);
+    add_slider("Target Density",      &target_density);
+    add_slider("Pressure Multiplier", &pressure_multiplier);
+    add_slider("Gravity",             &gravity);
 }
 
 EXPORT void update(float dt) {
-    debug_info("{} {}", &target_density);
     if (enable_sim)
         //for_n(4)
-            simulation_step(dt * 0.1f);
-    float min = particle_system.density[0],
-          max = particle_system.density[0];
+            simulation_step(dt * 0.01f);
+    float min = 1e9f,
+          max = -1e9f;
     for_n (particle_system.count) {
         float const d = particle_system.density[i];
         if (d < min) min = d;
@@ -228,6 +251,8 @@ EXPORT void update(float dt) {
     }
     debug_info("min {}", &min);
     debug_info("max {}", &max);
+    debug_info("{}", &target_density);
+    debug_info("{}", &pressure_multiplier);
     //target_density = (min + max) * 0.5f;
 }
 
@@ -243,7 +268,7 @@ EXPORT void on_key(int key, int action) {
     }
 
     if (key == 's') {
-        simulation_step(0.01f);
+        simulation_step(1.0f/60.0f);
     }
 }
 

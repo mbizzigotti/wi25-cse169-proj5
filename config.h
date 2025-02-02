@@ -28,6 +28,8 @@ void log(int priority, char const* message);
 #define log_warn(M)  log(LOG_WARN, M)
 #define log_error(M) log(LOG_ERROR, M)
 
+void log_value(float value);
+
 void panic(char const* message);
 
 enum {
@@ -43,6 +45,8 @@ float sqrt(float x);
 void gfx_add_particle(float x, float y, float z, float color);
 
 void debug_info(char const* format, float* args);
+
+void add_slider(char const* name, float* ptr);
 
 // Internal API  ******************************************
 
