@@ -1,10 +1,11 @@
 #version 330 core
 
-#define COUNT 400
+#define MAX_COUNT 1000
 
 uniform float smoothing_radius;
 uniform float target_density;
-uniform vec2 positions [COUNT];
+uniform int count;
+uniform vec2 positions [MAX_COUNT];
 
 const vec2 resolution = vec2(800, 600);
 
@@ -31,7 +32,7 @@ void main() {
 
 #if 0 // View particles
     float m = 1e9;
-    for (int i = 0; i < COUNT; ++i) {
+    for (int i = 0; i < count; ++i) {
         float dist = distance(positions[i].xy, pos);
         m = min(dist, m);
     }
@@ -39,7 +40,7 @@ void main() {
 #endif
 
     float d = 0.0;
-    for (int i = 0; i < COUNT; ++i) {
+    for (int i = 0; i < count; ++i) {
         float dist = length(positions[i].xy - pos);
         d += smoothing_kernel(smoothing_radius, dist);
         //d += smoothing_kernel_grad(smoothing_radius, dist);
@@ -48,10 +49,10 @@ void main() {
     vec3 color = vec3(1.0);
     
     if (d > target_density) {
-        color = mix(vec3(1.0), vec3(1.0, 0.0, 0.0), (d - target_density) / 0.001);
+        color = mix(vec3(1.0), vec3(1.0, 0.0, 0.0), (d - target_density) / 0.003);
     }
     else {
-        color = mix(vec3(1.0), vec3(0.0, 0.0, 1.0), (target_density - d) / 0.001);
+        color = mix(vec3(1.0), vec3(0.0, 0.0, 1.0), (target_density - d) / 0.003);
     }
 
     //fragment = vec4(vec3(d), 1.0);

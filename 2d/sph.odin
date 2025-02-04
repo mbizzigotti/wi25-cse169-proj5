@@ -21,6 +21,7 @@ particle_radius: f32 : 2;
 sub_steps : i32 = 4;
 
 position : [] vec2;
+predicted_position : [] vec2;
 velocity : [] vec2;
 density  : [] f32;
 
@@ -31,8 +32,10 @@ Grid_Bucket :: struct {
 
 grid_dim : [2] i32;
 grid : [] Grid_Bucket;
+debug_draw_grid : bool = false;
 
-particle_count :: 400;
+particle_count : i32 = 2000;
+debug_draw_particles : bool = true;
 
 grid_position :: proc(pos: vec2) -> [2] i32 {
     pos := pos / smoothing_radius;
@@ -49,6 +52,14 @@ create_grid :: proc() {
 
     for i in 0..<particle_count {
         gpos := grid_position(position[i]);
+
+        if gpos.x < 0 \
+        || gpos.y < 0 \
+        || gpos.x >= grid_dim.x \
+        || gpos.y >= grid_dim.y {
+            continue;
+        }
+
         cell := &grid[gpos.y * grid_dim.x + gpos.x];
         
         if cell.count >= 8 { continue; }
@@ -58,7 +69,7 @@ create_grid :: proc() {
     }
 }
 
-for_each_neighbor :: proc(particle_index: int, callback: proc(int,int) -> $T, initial: T) -> T {
+for_each_neighbor :: proc(particle_index: i32, callback: proc(i32,i32) -> $T, initial: T) -> T {
     sum := initial;
     base := grid_position(position[particle_index]);
     
@@ -76,7 +87,7 @@ for_each_neighbor :: proc(particle_index: int, callback: proc(int,int) -> $T, in
             cell := &grid[gpos.y * grid_dim.x + gpos.x];
 
             for i in 0..<cell.count {
-                sum += callback(particle_index, cast(int) cell.indices[i]);
+                sum += callback(particle_index, cast(i32) cell.indices[i]);
             }
         }
     }
@@ -88,26 +99,36 @@ create :: proc() {
     position = make([] vec2, particle_count);
     velocity = make([] vec2, particle_count);
     density  = make([] f32,  particle_count);
+    predicted_position = make([] vec2, particle_count);
 }
 
 reset :: proc() {
+    X : f32 = 10; Y : f32 = 10;
     for i in 0..<particle_count {
-        position[i] = { rand.float32_range(0, WIDTH), rand.float32_range(0, HEIGHT) }
+        //position[i] = { rand.float32_range(0, WIDTH), rand.float32_range(0, HEIGHT) }
+        position[i] = { X, Y };
         velocity[i] = 0;
+
+        X += 11;
+        if X >= 700 {
+            X = 10;
+            Y += 11;
+        }
     }
 }
 
 draw :: proc() {
+    if false { return; }
     for i in 0..<particle_count {
         color := raylib.BLACK;
         mag := linalg.length(velocity[i]);
         when true {
-            color.r = cast(u8) (mag);
-            color.g = cast(u8) (mag);
-            color.b = cast(u8) (mag);
+            color.r = cast(u8) (min(mag * 2, 255));
+            color.g = cast(u8) (min(mag * 2, 255));
+            color.b = cast(u8) (255);
             color.a = 255;
         }
-        raylib.DrawCircleV(position[i], particle_radius, color);
+        raylib.DrawCircleV(position[i], particle_radius * 0.4, color);
     }
     raylib.DrawCircleLinesV(raylib.GetMousePosition(), smoothing_radius, raylib.BLACK);
 }
@@ -116,13 +137,14 @@ shader_file_path :: "density.frag";
 shader_mod_time: i64;
 shader: raylib.Shader;
 shader_locations: struct {
-    smoothing_radius: i32,
-    target_density: i32,
-    positions: i32,
+    smoothing_radius,
+    target_density,
+    count,
+    positions: i32
 }
 
 main :: proc() {
-    raylib.InitWindow(WIDTH, HEIGHT, "Bouncing Ball in Odin")
+    raylib.InitWindow(WIDTH, HEIGHT, "CSE 169 Project 5 (SPH)")
     defer raylib.CloseWindow()
 
     raylib.SetTargetFPS(120);
@@ -149,44 +171,60 @@ main :: proc() {
         if raylib.IsKeyPressed(raylib.KeyboardKey.F) {
             fixed = !fixed;
         }
-
+        if raylib.IsKeyPressed(raylib.KeyboardKey.G) {
+            debug_draw_grid = !debug_draw_grid;
+        }
+        
         reload_shaders();
-
+        
         duration := time.tick_lap_time(&last_tick)
         real_dt := cast(f32) time.duration_seconds(duration)
         dt := min(real_dt, 1.0/60.0)
-
+        
         create_grid();
         
+        
+        //sim_tick := time.tick_now();
+        //duration := time.tick_lap_time(&sim_tick)
         for _ in 0..<sub_steps {
-            update(dt / cast(f32) sub_steps);
+            update(2 * dt / cast(f32) sub_steps);
         }
         
         raylib.BeginDrawing()
         raylib.ClearBackground(raylib.BLACK)
         
-        when true {
+        when false {
             raylib.SetShaderValue (shader, shader_locations.smoothing_radius, &smoothing_radius, raylib.ShaderUniformDataType.FLOAT);
             raylib.SetShaderValue (shader, shader_locations.target_density,   &target_density,   raylib.ShaderUniformDataType.FLOAT);
+            raylib.SetShaderValue (shader, shader_locations.count,            &particle_count,   raylib.ShaderUniformDataType.INT);
             raylib.SetShaderValueV(shader, shader_locations.positions, raw_data(position), raylib.ShaderUniformDataType.VEC2, particle_count);
             raylib.BeginShaderMode(shader);
             raylib.DrawRectangle(0, 0, WIDTH, HEIGHT, raylib.WHITE);
             raylib.EndShaderMode();
         }
 
-        when false { // Draw debug grid
+        if debug_draw_grid { // Draw debug grid
             for y in 0..<grid_dim.y {
+                Y := y * cast(i32) smoothing_radius;
+                raylib.DrawLine(0, Y, WIDTH, Y, raylib.RED);
+            }
+            for x in 0..<grid_dim.x {
+                X := x * cast(i32) smoothing_radius;
+                raylib.DrawLine(X, 0, X, HEIGHT, raylib.RED);
+            }
+            for y in 0..<grid_dim.y {
+                Y := y * cast(i32) smoothing_radius;
                 for x in 0..<grid_dim.x {
-                    cell := &grid[y * grid_dim.x + x];
                     X := x * cast(i32) smoothing_radius;
-                    Y := y * cast(i32) smoothing_radius;
-                    raylib.DrawRectangleLines(X,Y, cast(i32) smoothing_radius, cast(i32) smoothing_radius, raylib.RED);
-                    raylib.DrawText(fmt.caprint(cell.count), X, Y, 20, raylib.BLACK);
+                    cell := &grid[y * grid_dim.x + x];
+                    if (cell.count == 8) {
+                        raylib.DrawRectangle(X, Y, cast(i32) smoothing_radius, cast(i32) smoothing_radius, raylib.WHITE);
+                    }
                 }
             }
         }
 
-        draw();
+        if debug_draw_particles { draw(); }
         
         raylib.DrawRectangle(WIDTH-200-5, 0, 200+5, cast(i32) gui_context.y, {0, 0, 0, 200})
         gui_context.y = 5;
@@ -195,9 +233,9 @@ main :: proc() {
         ui_text("{:.6f}", density_at(raylib.GetMousePosition()))
         ui_spinner("Sub Steps", &sub_steps, 1, 24);
         ui_slider("Gravity", &gravity.y, 0, 100);
-        ui_slider("h", &smoothing_radius, 50, 200);
-        ui_slider("Target", &target_density, 0, 0.002);
-        ui_slider("PM", &pressure_multiplier, 0, 200);
+        ui_slider("h", &smoothing_radius, 10, 150);
+        ui_slider("Target", &target_density, 0, 0.01);
+        ui_slider("PM", &pressure_multiplier, 0, 2000);
 
         raylib.EndDrawing()
         
@@ -256,6 +294,7 @@ get_shader_locations :: proc() {
     shader_locations = {
         smoothing_radius = raylib.GetShaderLocation(shader, "smoothing_radius"),
         target_density   = raylib.GetShaderLocation(shader, "target_density"),
+        count            = raylib.GetShaderLocation(shader, "count"),
         positions        = raylib.GetShaderLocation(shader, "positions"),
     };
 }

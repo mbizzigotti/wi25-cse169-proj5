@@ -3,11 +3,12 @@ import "core:fmt"
 import "core:math"
 import "core:math/linalg"
 import "core:math/rand"
+import "vendor:raylib"
 
-gravity : [2] f32 = { 0, 0 };
-smoothing_radius    : f32 = 70;
-target_density      : f32 = 0.0;
-pressure_multiplier : f32 = 0.0;
+gravity : [2] f32 = { 0, 50 };
+smoothing_radius    : f32 = 18;
+target_density      : f32 = 0.014;
+pressure_multiplier : f32 = 2000;
 fixed : bool = false;
 
 density_at :: proc(pos: [2] f32) -> f32 {
@@ -21,8 +22,12 @@ density_at :: proc(pos: [2] f32) -> f32 {
 
 update :: proc(dt: f32) {
     for i in 0..<particle_count {
-        density[i] = for_each_neighbor(i, proc(i, j: int) -> f32 {
-            dist := linalg.length(position[i] - position[j]);
+        predicted_position[i] = position[i] + velocity[i] * (1/120);
+    }
+
+    for i in 0..<particle_count {
+        density[i] = for_each_neighbor(i, proc(i, j: i32) -> f32 {
+            dist := linalg.length(predicted_position[i] - predicted_position[j]);
             return smoothing_kernel(dist);
         }, 0);
     }
@@ -31,7 +36,23 @@ update :: proc(dt: f32) {
         velocity[i] += gravity * dt;
 
         if fixed { velocity[i]  = 1000.0 * calculate_pressure_force(i) / density[i]; }
-        else     { velocity[i] += 1000.0 * calculate_pressure_force(i) / density[i] * dt; }
+        else     {
+            velocity[i] += 1000.0 * calculate_pressure_force(i) / density[i] * dt;
+            velocity[i] += 2.0 * calculate_viscosity_force(i) / density[i] * dt;
+        }
+
+        if raylib.IsMouseButtonDown(raylib.MouseButton.LEFT) {
+            mp := raylib.GetMousePosition();
+            d  := mp - position[i];
+            if linalg.dot(d,d) < 200 * 200 {
+                velocity[i] += 200 * linalg.normalize(d) * dt;
+            }
+        }
+
+        len := linalg.length(velocity[i]);
+        if len > 1000 {
+            velocity[i] *= 1000 / len;
+        }
     }
 
     for i in 0..<particle_count {
@@ -50,10 +71,6 @@ update_old :: proc(dt: f32) {
         density[i] = d;
     }
 
-    //for i in 0..<particle_count {
-    //    
-    //}
-
     for i in 0..<particle_count {
         velocity[i] += gravity * dt;
 
@@ -66,20 +83,28 @@ update_old :: proc(dt: f32) {
     }
 }
 
-calculate_pressure_force :: proc(i: int) -> vec2 {
-    force : vec2 = 0;
-    for j in 0..<particle_count {
-        if i == j { continue; }
-        to_point := position[j] - position[i];
+calculate_pressure_force :: proc(i: i32) -> vec2 {
+    return for_each_neighbor(i, proc(i,j: i32) -> vec2 {
+        if i == j { return 0; }
+        to_point := predicted_position[j] - predicted_position[i];
         distance := linalg.length(to_point);
         if distance == 0 { to_point = random_direction(); }
         else { to_point /= distance; }
         grad := to_point * smoothing_kernel_grad(distance);
         pressure := shared_pressure(density[j], density[i]);
-        if density[i] == 0 { continue; }
-        force += grad * pressure / density[j];
-    }
-    return force;
+        if density[i] == 0 { return 0; }
+        return grad * pressure / density[j];
+    }, 0);
+}
+
+calculate_viscosity_force :: proc(i: i32) -> vec2 {
+    return for_each_neighbor(i, proc(i,j: i32) -> vec2 {
+        if i == j { return 0; }
+        to_point := predicted_position[j] - predicted_position[i];
+        distance := linalg.length(to_point);
+        influence := viscosity_smoothing_kernel(distance);
+        return (velocity[j] - velocity[i]) * influence;
+    }, 0);
 }
 
 random_direction :: proc() -> vec2 {
@@ -118,17 +143,17 @@ resolve_collision :: proc(pos, vel: ^vec2) {
 
 KERNEL_1 :: false;
 
+viscosity_smoothing_kernel :: proc(dist: f32) -> f32 {
+    if dist >= smoothing_radius { return 0; }
+    volume := math.PI * math.pow(smoothing_radius, 8.0) / 4.0;
+    value := max(0.0, smoothing_radius * smoothing_radius - dist * dist);
+    return value * value * value / volume;
+}
+
 smoothing_kernel :: proc(dist: f32) -> f32 {
     if dist >= smoothing_radius { return 0; }
-    when KERNEL_1 {
-        volume := math.PI * math.pow(smoothing_radius, 8.0) / 4.0;
-        value := max(0.0, smoothing_radius * smoothing_radius - dist * dist);
-        return value * value * value / volume;
-    }
-    else {
-        volume := math.PI * math.pow(smoothing_radius, 4.0) / 6.0;
-        return (smoothing_radius - dist) * (smoothing_radius - dist) / volume;
-    }
+    volume := math.PI * math.pow(smoothing_radius, 4.0) / 6.0;
+    return (smoothing_radius - dist) * (smoothing_radius - dist) / volume;
 }
 
 smoothing_kernel_grad :: proc(dist: f32) -> f32 {

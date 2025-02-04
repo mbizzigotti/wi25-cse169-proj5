@@ -19,7 +19,7 @@ const shaders = {
             //},
             i_offset: {
                 location: null,
-                count: 4,
+                count: 4, 
                 type: gl.FLOAT,
                 normalize: false,
             },
