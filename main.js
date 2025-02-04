@@ -1,15 +1,12 @@
 'use strict';
 
 import {
-    gl,
-    compile_shaders,
-    create_vertex_buffer,
-    bind_vertex_buffer,
-    bind_index_buffer,
-    get_uniform,
-    create_index_buffer,
-    upload_buffer,
+    Renderer,
 } from "./graphics.js"
+
+const app = document.getElementById("app");
+
+let renderer = new Renderer();
 
 let c = null; // functions we defined in C!
 let c_bytes = null;
@@ -183,81 +180,21 @@ function loop(timestamp) {
     if (prev !== null) {
         const dt = (timestamp - prev)*0.001;
 
-        c.update(dt);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        
         const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline, camera.distance));
-        const model = new Float32Array([
-            4.0, 0.0, 0.0, 0.0,
-            0.0, 4.0, 0.0, 0.0,
-            0.0, 0.0, 4.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
-        ]);
+        c.update(dt);
 
-        const particle_count = particles.length / particle_size;
-        upload_buffer(sphere.vertex_buffer.i_offset, particles);
-        
-        gl.disable(gl.DEPTH_TEST);
-        bind_vertex_buffer("cube", {});
-        gl.uniformMatrix4fv(get_uniform("cube", "view_proj"), true, view_proj);
-        gl.uniformMatrix4fv(get_uniform("cube", "model"), true, model);
-        gl.drawArrays(gl.TRIANGLES, 0, 36);
-        
-        gl.enable(gl.DEPTH_TEST);
-        bind_index_buffer("test", sphere.index_buffer);
-        bind_vertex_buffer("test", sphere.vertex_buffer);
-        gl.uniformMatrix4fv(get_uniform("test", "view_proj"), true, view_proj);
-        gl.drawElementsInstanced(gl.TRIANGLES, sphere.index_count, gl.UNSIGNED_INT, 0, particle_count);
-        
-        document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
+        renderer.upload_particles(particles);
 
-//        c_floats[c.pressure_multiplier.valueOf() >> 2] = document.getElementById("test").valueAsNumber;
+        // c_floats[c.pressure_multiplier.valueOf() >> 2] = document.getElementById("test").valueAsNumber;
 
-        debug_next = 0;
-        particles.length = 0;
+       document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
+       renderer.render(view_proj);
+       
+       debug_next = 0;
+       particles.length = 0;
     }
     prev = timestamp;
     if (!want_exit) window.requestAnimationFrame(loop);
-}
-
-function generate_sphere(radius, latitudeBands, longitudeBands) {
-    const vertices = [];
-    const indices = [];
-
-    // Generate vertex positions
-    for (let lat = 0; lat <= latitudeBands; lat++) {
-        const theta = (lat * Math.PI) / latitudeBands; // Latitude angle (0 to PI)
-        const sinTheta = Math.sin(theta);
-        const cosTheta = Math.cos(theta);
-
-        for (let lon = 0; lon <= longitudeBands; lon++) {
-            const phi = (lon * 2 * Math.PI) / longitudeBands; // Longitude angle (0 to 2PI)
-            const sinPhi = Math.sin(phi);
-            const cosPhi = Math.cos(phi);
-
-            // Compute vertex position
-            const x = radius * sinTheta * cosPhi;
-            const y = radius * cosTheta;
-            const z = radius * sinTheta * sinPhi;
-
-            // Add the vertex
-            vertices.push(x, y, z);
-        }
-    }
-
-    // Generate indices
-    for (let lat = 0; lat < latitudeBands; lat++) {
-        for (let lon = 0; lon < longitudeBands; lon++) {
-            const first = lat * (longitudeBands + 1) + lon;
-            const second = first + longitudeBands + 1;
-
-            // Create two triangles for each grid square
-            indices.push(first, first + 1, second);
-            indices.push(second, first + 1, second + 1);
-        }
-    }
-
-    return [vertices, indices];
 }
 
 function clamp(x, a, b) {
@@ -295,8 +232,6 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     //document.addEventListener('keyup', (e) => {
     //    c.on_key(e.key.charCodeAt(), 0);
     //});
-    
-    const app = document.getElementById("app");
 
     app.addEventListener('mousedown', (e) => {
         touch_state.x = e.clientX;
@@ -353,10 +288,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         camera.distance -= 0.01 * e.deltaY;
     });
 
-    compile_shaders();
-    
-    const [vertices, indices] = generate_sphere(0.05, 24, 24);
-
+    /*
     sphere = {
         vertex_buffer: create_vertex_buffer({
             v_position: vertices,
@@ -366,15 +298,9 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         index_buffer: create_index_buffer(indices),
         index_count: indices.length,
     };
+    */
 
-    gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    gl.clearDepth(1.0);
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.enable(gl.CULL_FACE);
-    gl.cullFace(gl.BACK);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+    renderer.create();
 
     c.create();
   
