@@ -30,7 +30,7 @@ const MAX_PARTICLES = 100000;
 const test = []
 for (let i = 0; i < 100000; ++i) {
     const x = Math.random();
-    test.push(x*2-1, Math.random()*2-1, Math.random()*2-1, x);
+    test.push((x*2-1)*10.0, (Math.random()*2-1)*10.0, (Math.random()*2-1)*10.0, x);
 }
 
 export class Renderer {
@@ -185,7 +185,7 @@ export class Renderer {
     upload_particles(particles) {
         const instanceArray = new Float32Array(test);
         device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
-        this.instance_count = instanceArray.length / instanceSize;
+        this.instance_count = instanceArray.byteLength / instanceSize;
     }
 
     render(view_proj) {
