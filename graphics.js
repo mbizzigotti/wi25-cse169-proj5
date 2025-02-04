@@ -23,14 +23,16 @@ context.configure({
     alphaMode: "premultiplied",
 });
 
+const particleRadius = 0.02;
 const vertexSize   = 3 * 4;
-const instanceSize = 4 * 4;
+const instanceSize = 4 * 8;
 const MAX_PARTICLES = 100000;
 
 const test = []
-for (let i = 0; i < 100000; ++i) {
+for (let i = 0; i < 10000; ++i) {
     const x = Math.random();
-    test.push((x*2-1)*10.0, (Math.random()*2-1)*10.0, (Math.random()*2-1)*10.0, x);
+    test.push((x*2-1)*1.0, (Math.random()*2-1)*1.0, (Math.random()*2-1)*1.0, x);
+    test.push((Math.random()*2-1)*0.1,(Math.random()*2-1)*0.1,(Math.random()*2-1)*0.1,0);
 }
 
 export class Renderer {
@@ -46,6 +48,10 @@ export class Renderer {
         this.view               = null;
         this.index_count        = 0;
         this.instance_count     = 0;
+
+        this.compute_pipeline   = null;
+        this.simulation_buffer  = null;
+        this.compute_bind_group = null;
     }
 
     async create() {
@@ -70,7 +76,7 @@ export class Renderer {
                 @location(1) offset : vec4f
             ) -> VertexOutput {
                 var output : VertexOutput;
-                output.Position = transpose(uniforms.modelViewProjectionMatrix) * vec4f(0.05*position.xyz + offset.xyz, 1.0);
+                output.Position = transpose(uniforms.modelViewProjectionMatrix) * vec4f(position.xyz + offset.xyz, 1.0);
                 output.fragPosition = position;
                 output.value = offset.w;
                 return output;
@@ -83,10 +89,71 @@ export class Renderer {
             @fragment
             fn fragment_main(fragData: VertexOutput) -> @location(0) vec4f {
                 return vec4f(heatmapGradient(fragData.value), 1.0);
-            }`,
+            }
+
+            struct Simulation_Constants {
+                dt : f32,
+            }
+
+            struct Particle {
+                position : vec3f,
+                density  : f32,
+                velocity : vec3f,
+                color    : f32,
+            }
+
+            struct Particles {
+                particles : array<Particle>,
+            }
+
+            @binding(0) @group(0) var<storage, read_write> data : Particles;
+            @binding(1) @group(0) var<uniform>             in   : Simulation_Constants;
+            
+            struct Collision_Result {
+                pos: vec3f,
+                vel: vec3f,
+            }
+
+            // Function to handle collisions and keep particles within bounds
+            fn resolve_collision(pos: vec3f, vel: vec3f) -> Collision_Result {
+                var result = Collision_Result(pos, vel);
+
+                if (result.pos.x < -1.0 || result.pos.x > 1.0) {
+                    result.vel.x = -result.vel.x;
+                    result.pos.x = clamp(result.pos.x, -1.0, 1.0);
+                }
+                if (result.pos.y < -1.0 || result.pos.y > 1.0) {
+                    result.vel.y = -result.vel.y;
+                    result.pos.y = clamp(result.pos.y, -1.0, 1.0);
+                }
+                if (result.pos.z < -1.0 || result.pos.z > 1.0) {
+                    result.vel.z = -result.vel.z;
+                    result.pos.z = clamp(result.pos.z, -1.0, 1.0);
+                }
+
+                return result;
+            }
+            
+            @compute @workgroup_size(64)
+            fn simulate(@builtin(global_invocation_id) global_invocation_id : vec3u) {
+                let idx = global_invocation_id.x;
+
+                var particle = data.particles[idx];
+
+                // Update position
+                particle.position += particle.velocity * in.dt;
+
+                // Resolve collisions
+                let result = resolve_collision(particle.position, particle.velocity);
+                particle.position = result.pos;
+                particle.velocity = result.vel;
+
+                data.particles[idx] = particle;
+            }
+            `,
         });
 
-        const [vertices, indices] = generate_sphere(1.0, 12, 12);
+        const [vertices, indices] = generate_sphere(particleRadius, 12, 12);
         const sphereVertexArray = new Float32Array(vertices);
         const sphereIndexArray = new Uint16Array(indices);
 
@@ -102,11 +169,17 @@ export class Renderer {
         });
         device.queue.writeBuffer(this.index_buffer, 0, sphereIndexArray, 0, sphereIndexArray.length);
         this.index_count = sphereIndexArray.length;
-
+        
         this.instance_buffer = device.createBuffer({
             size: MAX_PARTICLES * instanceSize,
-            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
+        // --------------------------------------------------------------------------------------------
+        // TODO: What is this???
+        const instanceArray = new Float32Array(test);
+        device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
+        this.instance_count = instanceArray.byteLength / instanceSize;
+        // --------------------------------------------------------------------------------------------
 
         this.render_pipeline = device.createRenderPipeline({
             layout: "auto",
@@ -180,12 +253,54 @@ export class Renderer {
             },
             ],
         });
+
+        // =====================================> COMPUTE <=====================================
+        this.compute_pipeline = device.createComputePipeline({
+            layout: 'auto',
+            compute: {
+                module: shader_module,
+                entryPoint: 'simulate',
+            },
+        });
+
+        this.simulation_buffer = device.createBuffer({
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(
+            this.simulation_buffer,
+            0,
+            new Float32Array([
+                0.05
+            ])
+        );
+
+        this.compute_bind_group = device.createBindGroup({
+            layout: this.compute_pipeline.getBindGroupLayout(0),
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: this.instance_buffer,
+                        offset: 0,
+                        size: MAX_PARTICLES * instanceSize,
+                    },
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: this.simulation_buffer,
+                    },
+                },
+            ],
+        });
+        // =====================================================================================
     }
 
     upload_particles(particles) {
-        const instanceArray = new Float32Array(test);
-        device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
-        this.instance_count = instanceArray.byteLength / instanceSize;
+    //    const instanceArray = new Float32Array(test);
+    //    device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
+    //    this.instance_count = instanceArray.byteLength / instanceSize;
     }
 
     render(view_proj) {
@@ -217,14 +332,23 @@ export class Renderer {
             },
         };
         
-        const cmd = command_encoder.beginRenderPass(renderPassDescriptor);
-        cmd.setPipeline(this.render_pipeline);
-        cmd.setBindGroup(0, this.uniform_bind_group);
-        cmd.setVertexBuffer(0, this.vertex_buffer);
-        cmd.setVertexBuffer(1, this.instance_buffer);
-        cmd.setIndexBuffer(this.index_buffer, "uint16");
-        cmd.drawIndexed(this.index_count, this.instance_count, 0, 0);
-        cmd.end();
+        {
+            const cmd = command_encoder.beginComputePass();
+            cmd.setPipeline(this.compute_pipeline);
+            cmd.setBindGroup(0, this.compute_bind_group);
+            cmd.dispatchWorkgroups(Math.ceil(this.instance_count / 64));
+            cmd.end();
+        }
+        {
+            const cmd = command_encoder.beginRenderPass(renderPassDescriptor);
+            cmd.setPipeline(this.render_pipeline);
+            cmd.setBindGroup(0, this.uniform_bind_group);
+            cmd.setVertexBuffer(0, this.vertex_buffer);
+            cmd.setVertexBuffer(1, this.instance_buffer);
+            cmd.setIndexBuffer(this.index_buffer, "uint16");
+            cmd.drawIndexed(this.index_count, this.instance_count, 0, 0);
+            cmd.end();
+        }
         
         device.queue.submit([command_encoder.finish()]);
     }
