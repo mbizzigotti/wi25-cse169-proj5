@@ -2,6 +2,7 @@
 
 import {
     Renderer,
+    simulation,
 } from "./graphics.js"
 
 const app = document.getElementById("app");
@@ -106,7 +107,7 @@ function debug_info(format, args) {
     debug_next += 1;
 }
 
-function add_slider(label, value_address) {
+function add_slider(label, obj, name) {
     const controls = document.getElementById("controls");
     
     // Create a container for the slider
@@ -118,29 +119,28 @@ function add_slider(label, value_address) {
     
     // Create label for the slider
     const label_element = document.createElement("label");
-    label_element.textContent = c_string(label);
+    label_element.textContent = label;
     label_element.style.minWidth = "300px";
     label_element.style.textAlign = "right";
     label_element.style.pointerEvents = "none"; // Allow touch/mouse events to fall through
     
     // Create the slider input
     const slider = document.createElement("input");
-    const index = value_address >> 2; // want an index (float = 4 bytes)
     slider.type = "range";
     slider.min = "0";
     slider.max = "100";
-    slider.value = c_floats[index].toFixed(3);
+    slider.value = obj[name].toFixed(3);
     slider.style.width = "200px";
     
     // Create span to show the value
     const valueDisplay = document.createElement("input");
     valueDisplay.type = "text";
-    valueDisplay.value = c_floats[index].toFixed(3);
+    valueDisplay.value = obj[name].toFixed(3);
     valueDisplay.style.width = "50px";
     valueDisplay.style.textAlign = "center";
 
     const set_value = (value) => {
-        c_floats[index] = parseFloat(value);
+        obj[name] = parseFloat(value);
         valueDisplay.value = value;
     };
 
@@ -156,8 +156,8 @@ function add_slider(label, value_address) {
     
     // Append elements to container
     sliderContainer.appendChild(label_element);
-    sliderContainer.appendChild(slider);
     sliderContainer.appendChild(valueDisplay);
+    sliderContainer.appendChild(slider);
     
     // Append slider container to controls
     controls.appendChild(sliderContainer);
@@ -166,32 +166,24 @@ function add_slider(label, value_address) {
 //////////////////////////////////////////////////////////////////////////////
 
 
-let vertex_buffer = null;
-let sphere = null;
+let simulate = true;
 
 const camera = {
     azimuth: 0.0,
     incline: 0.0,
-    distance: 10.0,
+    distance: 3.0,
 };
 
 let prev = null;
 function loop(timestamp) {
     if (prev !== null) {
         const dt = (timestamp - prev)*0.001;
-
         const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline, camera.distance));
-        c.update(dt);
 
-        renderer.upload_particles(particles);
-
-        // c_floats[c.pressure_multiplier.valueOf() >> 2] = document.getElementById("test").valueAsNumber;
-
-       document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
-       renderer.render(view_proj);
-       
-       debug_next = 0;
-       particles.length = 0;
+        renderer.render(view_proj, simulate);
+        
+        document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
+        debug_next = 0;
     }
     prev = timestamp;
     if (!want_exit) window.requestAnimationFrame(loop);
@@ -228,6 +220,13 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
 
     document.addEventListener('keydown', (e) => {
         c.on_key(e.key.charCodeAt(), 1);
+
+        if (e.key == 'r') {
+            renderer.temp();
+        }
+        if (e.key == ' ') {
+            simulate = !simulate;
+        }
     });
     //document.addEventListener('keyup', (e) => {
     //    c.on_key(e.key.charCodeAt(), 0);
@@ -302,7 +301,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
 
     renderer.create();
 
-    c.create();
+    add_slider("t", simulation, "target_density");
   
     window.requestAnimationFrame(loop);
 });
