@@ -7,8 +7,7 @@ import {
 } from "./graphics.js"
 
 const app = document.getElementById("app");
-
-let renderer = new Renderer();
+const renderer = new Renderer();
 
 let c = null; // functions we defined in C!
 let c_bytes = null;
@@ -234,7 +233,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         c.on_key(e.key.charCodeAt(), 1);
 
         if (e.key == 'r') {
-            renderer.temp();
+            renderer.create_particles();
         }
         if (e.key == ' ') {
             simulate = !simulate;
@@ -313,9 +312,11 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
 
     renderer.create();
 
-    add_slider(simulation, "target_density", 500, 2000);
+    add_slider(simulation, "target_density", 2000, 8000);
     add_slider(simulation, "influence_radius", 0.001, 0.5);
-    add_slider(simulation, "pressure_multiplier", 1, 50);
+    add_slider(simulation, "pressure_multiplier", 100000, 1000000);
+    add_slider(simulation, "particle_count", 5000, 50000);
+    add_slider(simulation, "wave_speed", 0.0, 2.0);
   
     window.requestAnimationFrame(loop);
 });

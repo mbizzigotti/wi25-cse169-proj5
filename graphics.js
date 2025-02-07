@@ -33,7 +33,7 @@ function load(key, obj) {
     else save(key, obj);
 }
 
-const particleRadius         = 0.005;
+const particleRadius         = 0.007;
 const vertexSize             = 3 * 4;
 const instanceSize           = 4 * 8;
 const MAX_PARTICLES          = 200000;
@@ -41,8 +41,10 @@ const max_particles_per_cell = 16;
 
 export const simulation = {
     influence_radius    : 0.042,
-    target_density      : 1800,
-    pressure_multiplier : 200000,
+    target_density      : 2400,
+    pressure_multiplier : 300000,
+    particle_count      : 8000,
+    wave_speed          : 0.7,
 };
 let simulation_time = 0.0;
 
@@ -124,13 +126,38 @@ export class Renderer {
                 return output;
             }
 
+            // https://www.shadertoy.com/view/4dsSzr
+            fn neonGradient(t: f32) -> vec3f {
+                let k = abs(0.43 - t) * 1.7;
+                return clamp(vec3f(t * 1.3 + 0.1, k*k, (1.0 - t) * 1.7), vec3f(0.0), vec3f(1.0));
+            }
             fn heatmapGradient(t : f32) -> vec3f {
                 return clamp((pow(t, 1.5) * 0.8 + 0.2) * vec3f(smoothstep(0.0, 0.35, t) + t * 0.5, smoothstep(0.5, 1.0, t), max(1.0 - t * 1.7, t * 7.0 - 6.0)), vec3f(0.0), vec3f(1.0));
+            }
+            fn rainbowGradient(t: f32) -> vec3f {
+                var c = 1.0 - pow(abs(vec3f(t) - vec3f(0.65, 0.5, 0.2)) * vec3f(3.0, 3.0, 5.0), vec3f(1.5, 1.3, 1.7));
+                let k = abs(t - 0.04) * 5.0;
+                c.r = max((0.15 - k*k), c.r);
+                if t < 0.5 { c.g = smoothstep(0.04, 0.45, t); }
+                return clamp(c, vec3f(0.0), vec3f(1.0));
+            }
+            fn hueGradient(t: f32) -> vec3f {
+                let p = abs(fract(t + vec3f(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+                return clamp(p - 1.0, vec3f(0.0), vec3f(1.0));
+            }
+            fn electricGradient(t: f32) -> vec3f {
+                let k = smoothstep(0.6, 0.9, t);
+                let c = vec3f(t * 8.0 - 6.3, k*k, pow(t, 3.0) * 1.7);
+                return clamp(pow(c*10,vec3f(0.2)), vec3f(0.0), vec3f(1.0));	
             }
 
             @fragment
             fn fragment_main(fragData: VertexOutput) -> @location(0) vec4f {
-                return vec4f(heatmapGradient(fragData.value * 0.015) * 1, 1.0);
+                //return vec4f(neonGradient(fragData.value * 0.015) * 1, 1.0);
+                //return vec4f(heatmapGradient(fragData.value * 0.015) * 1, 1.0);
+                //return vec4f(hueGradient(fragData.value * 0.005) * 1, 1.0);
+                return vec4f(rainbowGradient(fragData.value * 0.005) * 1, 1.0);
+                //return vec4f(electricGradient(fragData.value * 0.01) * 1, 1.0);
                 //return vec4f(1.0);
             }
 
@@ -311,7 +338,7 @@ export class Renderer {
                         force += grad * pressure / other.density;
 
                         let viscosity = viscosity_smoothing_kernel(distance);
-                        force += 1000.0 * (other.velocity - particle.velocity) * viscosity;
+                        force += 300.0 * (other.velocity - particle.velocity) * viscosity;
                     }
                 }
                 }
@@ -625,10 +652,6 @@ export class Renderer {
             size: MAX_PARTICLES * instanceSize,
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
-        // --------------------------------------------------------------------------------------------
-        // TODO: What is this???
-        this.temp();
-        // --------------------------------------------------------------------------------------------
 
         this.render_pipeline = device.createRenderPipeline({
             layout: "auto",
@@ -818,25 +841,30 @@ export class Renderer {
         });
     }
 
-    upload_particles(particles) {
-    //    const instanceArray = new Float32Array(test);
-    //    device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
-    //    this.instance_count = instanceArray.byteLength / instanceSize;
-    }
-
-    temp() {
-        const test = []
-        for (let i = 0; i < 10000; ++i) {
-            const x = Math.random();
-            test.push((x*2-1)*0.4, (Math.random()*2-1)*0.4, (Math.random()*2-1)*0.4, x);
-            test.push(0,0,0,0);
-        }
+    create_particles() {
+        const test = [];
+        (() => {
+            let count = 0;
+            for (let y = -0.4;; y += 0.019) {
+            for (let x = -0.2; x < 0.2; x += 0.019) {
+                for (let z = -0.2; z < 0.2; z += 0.019) {
+                    test.push(x, y, z, 0); // pos + density
+                    test.push(0,0,0,0); // velocity
+                    if (++count >= simulation.particle_count) return;
+                }}
+            }
+        })();
         const instanceArray = new Float32Array(test);
         device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
         this.instance_count = instanceArray.byteLength / instanceSize;
+        simulation.particle_count = this.instance_count;
     }
 
     render(view_proj, simulate) {
+        if (simulation.particle_count != this.instance_count) {
+            this.create_particles();
+        }
+
         const command_encoder = device.createCommandEncoder();
         
         device.queue.writeBuffer(this.uniform_buffer, 0, view_proj);
@@ -875,7 +903,7 @@ export class Renderer {
             floats[7] = simulation.target_density;
             floats[8] = simulation.pressure_multiplier;
             device.queue.writeBuffer(this.simulation_buffer, 0, constants);
-            simulation_time += 100.0 * dt;
+            simulation_time += simulation.wave_speed * 100.0 * dt;
             
             for (let i = 0; i < 4; i++) {
                 const cmd = command_encoder.beginComputePass();
