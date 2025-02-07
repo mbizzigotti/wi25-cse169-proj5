@@ -3,6 +3,7 @@
 import {
     Renderer,
     simulation,
+    modify_simulation_callback,
 } from "./graphics.js"
 
 const app = document.getElementById("app");
@@ -107,7 +108,7 @@ function debug_info(format, args) {
     debug_next += 1;
 }
 
-function add_slider(label, obj, name) {
+function add_slider(obj, name, min, max) {
     const controls = document.getElementById("controls");
     
     // Create a container for the slider
@@ -119,7 +120,7 @@ function add_slider(label, obj, name) {
     
     // Create label for the slider
     const label_element = document.createElement("label");
-    label_element.textContent = label;
+    label_element.textContent = name;
     label_element.style.minWidth = "300px";
     label_element.style.textAlign = "right";
     label_element.style.pointerEvents = "none"; // Allow touch/mouse events to fall through
@@ -127,31 +128,42 @@ function add_slider(label, obj, name) {
     // Create the slider input
     const slider = document.createElement("input");
     slider.type = "range";
-    slider.min = "0";
-    slider.max = "100";
-    slider.value = obj[name].toFixed(3);
+    slider.min = 0;
+    slider.max = 1000;
+    slider.value = 1000 * (obj[name] - min) / (max - min);
     slider.style.width = "200px";
+    slider.style.color = "red";
+    slider.style.background = "blue";
     
     // Create span to show the value
     const valueDisplay = document.createElement("input");
     valueDisplay.type = "text";
-    valueDisplay.value = obj[name].toFixed(3);
-    valueDisplay.style.width = "50px";
+    valueDisplay.value = obj[name];
+    valueDisplay.style.width = "fit";
     valueDisplay.style.textAlign = "center";
+    valueDisplay.style.background = "#0F0F2F"
+    valueDisplay.style.fontFamily = "monospace"
+    valueDisplay.style.color = "white"
+    valueDisplay.style.border = "none"
 
     const set_value = (value) => {
-        obj[name] = parseFloat(value);
-        valueDisplay.value = value;
+        obj[name] = value;
+        modify_simulation_callback();
     };
 
     // Update slider when valueDisplay changes
     valueDisplay.addEventListener("change", function () {
-        set_value(valueDisplay.value);
+        const value = parseFloat(valueDisplay.value);
+        set_value(value);
+        slider.value = 1000 * (value - min) / (max - min);
     });
     
     // Update value when slider changes
     slider.addEventListener("input", function () {
-        set_value(slider.value);
+        const t = parseInt(slider.value) / 1000;
+        const value = min + (max - min) * t;
+        set_value(value);
+        valueDisplay.value = value.toFixed(3);
     });
     
     // Append elements to container
@@ -301,7 +313,9 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
 
     renderer.create();
 
-    add_slider("t", simulation, "target_density");
+    add_slider(simulation, "target_density", 0, 100);
+    add_slider(simulation, "influence_radius", 0.001, 0.5);
+    add_slider(simulation, "pressure_multiplier", 1, 50);
   
     window.requestAnimationFrame(loop);
 });

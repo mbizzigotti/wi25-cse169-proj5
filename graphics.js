@@ -23,29 +23,54 @@ context.configure({
     alphaMode: "premultiplied",
 });
 
+function save(key, data) {
+    try { localStorage.setItem(key, JSON.stringify(data)); } finally {}
+}
+
+function load(key, obj) {
+    const data = localStorage.getItem(key);
+    if (data) Object.assign(obj, JSON.parse(data));
+    else save(key, obj);
+}
+
 const particleRadius = 0.01;
 const vertexSize   = 3 * 4;
 const instanceSize = 4 * 8;
 const MAX_PARTICLES = 200000;
 
 const max_particles_per_cell = 16;
-const influence_radius    = 0.3;
-const pressure_multiplier = 1;
 
 export const simulation = {
-    target_density: 0,
+    influence_radius    : 0.3,
+    target_density      : 1.0/0.007,
+    pressure_multiplier : 1,
 };
 
-const grid_size_x = Math.ceil(2.0 / influence_radius);
-const grid_size_y = Math.ceil(2.0 / influence_radius);
-const grid_size_z = Math.ceil(2.0 / influence_radius);
-const grid_size = grid_size_x * grid_size_y * grid_size_z;
+export function modify_simulation_callback() {
+    save("sim", simulation);
+}
+
+load("sim", simulation);
+
+let grid_size_x;
+let grid_size_y;
+let grid_size_z;
+let grid_size;
+const MAX_GRID_SIZE = 100;
+
+function create_grid() {
+    grid_size_x = Math.floor(2.0 / simulation.influence_radius);
+    grid_size_y = Math.floor(2.0 / simulation.influence_radius);
+    grid_size_z = Math.floor(2.0 / simulation.influence_radius);
+    grid_size = grid_size_x * grid_size_y * grid_size_z;
+}
 
 const test = []
 for (let i = 0; i < 200; ++i) {
     const x = Math.random();
     test.push((x*2-1)*1.0, (Math.random()*2-1)*1.0, 0.01, x);
-    test.push((Math.random()*2-1)*5,(Math.random()*2-1)*5,0,0);
+    //test.push((Math.random()*2-1)*5,(Math.random()*2-1)*5,0,0);
+    test.push(0,0,0,0);
 }
 
 export class Renderer {
@@ -77,8 +102,6 @@ export class Renderer {
         this.grid_buffer        = null;
         this.grid_count_buffer  = null;
         this.compute_bind_group = null;
-
-        console.log("Grid Size", grid_size_x, "->", grid_size);
     }
 
     async create() {
@@ -115,8 +138,8 @@ export class Renderer {
 
             @fragment
             fn fragment_main(fragData: VertexOutput) -> @location(0) vec4f {
-                //return vec4f(heatmapGradient(fragData.value) * 1, 1.0);
-                return vec4f(1.0);
+                //return vec4f(heatmapGradient(fragData.value * 0.005) * 1, 1.0);
+                return vec4f(0.0);
             }
 
             struct Simulation_Constants {
@@ -202,8 +225,10 @@ export class Renderer {
             }
 
             fn smoothing_kernel_grad(dist: f32) -> f32 {
-                let scale = 12 / (pow(in.influence_radius, 4) * PI);
-                return (dist - in.influence_radius) * scale;
+                if dist >= in.influence_radius { return 0; }
+                let f = in.influence_radius * in.influence_radius - dist * dist;
+                let scale = -24 / (PI * pow(in.influence_radius, 8));
+                return scale * dist * f * f;   
             }
 
             fn density_to_pressure(density: f32) -> f32 {
@@ -226,7 +251,7 @@ export class Renderer {
 
                 // Calculate grid cell position
                 var coord = vec3i((particle.position * 0.5 + 0.5) * vec3f(in.grid_size));
-                coord = clamp(coord, vec3i(0,0,0), vec3i(in.grid_size) - vec3i(1,1,1));
+                //coord = clamp(coord, vec3i(0,0,0), vec3i(in.grid_size) - vec3i(1,1,1));
 
                 particle.density = 0;
 
@@ -248,14 +273,10 @@ export class Renderer {
                         let other_idx = grid.data[grid_index*max_particles_per_cell + u32(i)];
                         let other = data.particles[other_idx];
                         let dist = length(other.position - particle.position);
-                        particle.density += smoothing_kernel(dist);
+                        particle.density += viscosity_smoothing_kernel(dist);
                     }
                 }
                 }
-                }
-
-                if particle.density <= 0 {
-                    particle.density = 0.0;
                 }
 
                 data.particles[idx] = particle;
@@ -267,30 +288,29 @@ export class Renderer {
             fn apply_forces(@builtin(global_invocation_id) global_invocation_id : vec3u) {
                 let idx = global_invocation_id.x;
                 var particle = data.particles[idx];
+                var force = vec3f(0,0,0);
 
                 let coord = vec3i((particle.position * 0.5 + 0.5) * vec3f(in.grid_size));
-                var force = vec3f(0,0,0);
-                
                 for (var dx = -1; dx <= 1; dx++) {
                 for (var dy = -1; dy <= 1; dy++) {
                 for (var dz = -1; dz <= 1; dz++) {
                     let d = vec3i(dx, dy, dz);
                     let c = coord + d;
-
                     if (c.x < 0 || c.x >= i32(in.grid_size.x)
                     ||  c.y < 0 || c.y >= i32(in.grid_size.y)
                     ||  c.z < 0 || c.z >= i32(in.grid_size.z))
                         {continue;}
-
                     let grid_index = coord_to_index(vec3u(c));
                     let count = min(max_particles_per_cell, i32(atomicLoad(&count.data[grid_index])));
-
                     for (var offset = 0; offset < count; offset++) {
                         let j = grid.data[grid_index*max_particles_per_cell + u32(offset)];
+
+                //    for(var j: u32 = 0; j < in.particle_count; j++) {{{{
+                        
                         if idx == j { continue; }
 
                         let other = data.particles[j];
-                        var to_point = (other.position - particle.position);
+                        var to_point = other.position - particle.position;
                         let distance = length(to_point);
                         if distance == 0 { to_point = vec3f(1,0,0); }
                         else { to_point /= distance; }
@@ -309,11 +329,11 @@ export class Renderer {
                 particle.velocity = force / particle.density;
                 //particle.velocity += in.dt * force / particle.density;
                 
-                if false {
-                    let grid_index = coord_to_index(vec3u(coord));
-                    let n = atomicLoad(&count.data[grid_index]);
-                    particle.density = f32(n >= max_particles_per_cell);
-                }
+                //if false {
+                //    let grid_index = coord_to_index(vec3u(coord));
+                //    let n = atomicLoad(&count.data[grid_index]);
+                //    particle.density = f32(n >= max_particles_per_cell);
+                //}
 
                 data.particles[idx] = particle;
             }
@@ -353,7 +373,7 @@ export class Renderer {
 
                 // Update position
                 particle.position += particle.velocity * in.dt;
-                particle.density  *= 0.0005;
+                //particle.density  *= 0.0005;
                 //particle.density  *= 100.0;
 
                 // Resolve collisions
@@ -438,15 +458,106 @@ export class Renderer {
             @binding(2) @group(0) var<storage, read>       data  : Particles;
             @binding(3) @group(0) var<storage, read>       grid  : Grid;
             @binding(4) @group(0) var<storage, read_write> count : Grid_Count;
+
+            fn calculate_density(pos: vec3f) -> f32 {
+                // Calculate grid cell position
+                var coord = vec3i((pos * 0.5 + 0.5) * vec3f(in.grid_size));
+                coord = clamp(coord, vec3i(0,0,0), vec3i(in.grid_size) - vec3i(1,1,1));
+
+                var density: f32 = 0;
+
+                for (var dx = -1; dx <= 1; dx++) {
+                for (var dy = -1; dy <= 1; dy++) {
+                for (var dz = -1; dz <= 1; dz++) {
+                    let d = vec3i(dx, dy, dz);
+                    let c = coord + d;
+
+                    if (c.x < 0 || c.x >= i32(in.grid_size.x)
+                    ||  c.y < 0 || c.y >= i32(in.grid_size.y)
+                    ||  c.z < 0 || c.z >= i32(in.grid_size.z))
+                        {continue;}
+
+                    let grid_index = coord_to_index(vec3u(c));
+                    let count = min(max_particles_per_cell, i32(atomicLoad(&count.data[grid_index])));
+
+                    for (var i = 0; i < count; i++) {
+                        let other_idx = grid.data[grid_index*max_particles_per_cell + u32(i)];
+                        let other = data.particles[other_idx];
+                        let dist = length(other.position - pos);
+                        density += smoothing_kernel(dist);
+                    }
+                }
+                }
+                }
+
+                return density;
+            }
+
+            fn smoothing_kernel_grad(dist: f32) -> f32 {
+                let scale = 12 / (pow(in.influence_radius, 4) * PI);
+                return (dist - in.influence_radius) * scale;
+            }
+
+            fn density_to_pressure(density: f32) -> f32 {
+                let grad = density - in.target_density;
+                return grad * in.pressure_multiplier;
+            }
+
+            fn shared_pressure(density1: f32, density2: f32) -> f32 {
+                let pressure1 = density_to_pressure(density1);
+                let pressure2 = density_to_pressure(density2);
+                return (pressure1 + pressure2) * 0.5;
+            }
+
+            fn calculate_force(pos: vec3f, density: f32) -> vec3f {
+                let coord = vec3i((pos * 0.5 + 0.5) * vec3f(in.grid_size));
+                var force = vec3f(0,0,0);
+                
+                for (var dx = -1; dx <= 1; dx++) {
+                for (var dy = -1; dy <= 1; dy++) {
+                for (var dz = -1; dz <= 1; dz++) {
+                    let d = vec3i(dx, dy, dz);
+                    let c = coord + d;
+
+                    if (c.x < 0 || c.x >= i32(in.grid_size.x)
+                    ||  c.y < 0 || c.y >= i32(in.grid_size.y)
+                    ||  c.z < 0 || c.z >= i32(in.grid_size.z))
+                        {continue;}
+
+                    let grid_index = coord_to_index(vec3u(c));
+                    let count = min(max_particles_per_cell, i32(atomicLoad(&count.data[grid_index])));
+
+                    for (var offset = 0; offset < count; offset++) {
+                        let j = grid.data[grid_index*max_particles_per_cell + u32(offset)];
+                        //if  { continue; }
+
+                        let other = data.particles[j];
+                        var to_point = (other.position - pos);
+                        let distance = length(to_point);
+                        if distance < 0.0000001 { continue;} //to_point = vec3f(1,0,0); }
+                        else { to_point /= distance; }
+                        let grad = to_point * smoothing_kernel_grad(distance);
+                        let pressure = shared_pressure(other.density, density);
+                        //if other.density == 0 || density == 0 { continue; }
+                        force -= grad * pressure / other.density;
+                        //force += to_point * other.density;
+                    }
+                }
+                }
+                }
+
+                return force;
+            }
             
             fn coord_to_index(coord: vec3u) -> u32 {
                 return coord.x + in.grid_size.x * (coord.y + coord.z * in.grid_size.y);
             }
 
             fn smoothing_kernel(dist: f32) -> f32 {
-                if dist >= in.influence_radius { return 0; }    
-                let volume = PI * pow(in.influence_radius, 4) / 6;
-                return (in.influence_radius - dist) * (in.influence_radius - dist) / volume;
+                if dist >= in.influence_radius { return 0; }
+                let volume = PI * pow(in.influence_radius, 8.0) / 4.0;
+                let value = max(0.0, in.influence_radius * in.influence_radius - dist * dist);
+                return value * value * value / volume;
             }
 
             fn heatmapGradient(t : f32) -> vec3f {
@@ -463,24 +574,38 @@ export class Renderer {
                 //    let dist = length(pos - particle.position);
                 //    density += smoothing_kernel(dist);
                 //}
-                //density *= 0.003;
+                var density = calculate_density(pos);
+                //let force = normalize(calculate_force(pos, density));
 
+                //density *= 0.007;
+                
                 let coord = (pos * 0.5 + 0.5) * vec3f(in.grid_size);
                 let grid_index = coord_to_index(vec3u(coord));
                 let n = atomicAdd(&count.data[grid_index], 0);
-                let density = f32(n) / 16;
+                //let density = f32(n) / 16;
+//
+                //var min_dist: f32 = 1e9;
+                //for (var i: u32 = 0; i < n; i++) {
+                //    let idx = grid.data[grid_index*max_particles_per_cell + i];
+                //    let particle = data.particles[idx];
+                //    let dist = length(pos - particle.position);
+                //    min_dist = min(min_dist, dist);
+                //}
+                
+                if n > 16 { return vec4f(1, 1, 0, 1); }
 
-                var min_dist: f32 = 1e9;
-                for (var i: u32 = 0; i < n; i++) {
-                    let idx = grid.data[grid_index*max_particles_per_cell + i];
-                    let particle = data.particles[idx];
-                    let dist = length(pos - particle.position);
-                    min_dist = min(min_dist, dist);
+                var color: vec3f;
+                if (density > in.target_density) {
+                    color = mix(vec3(1.0), vec3(1.0, 0.0, 0.0), (density - in.target_density) * 0.01);
                 }
+                else {
+                    color = mix(vec3(1.0), vec3(0.0, 0.0, 1.0), (in.target_density - density) * 0.01);
+                }
+                return vec4f(color, 1.0);
 
-                //return vec4f(heatmapGradient(density), 1.0);
-                if n == 16 { return vec4f(1, 0, 0, 1); }
-                return vec4f(vec3f(.01/min_dist), 1.0);
+                //return vec4f(heatmapGradient(density * 0.005), 1.0);
+                //return vec4f(density, force.xy*0.3, 1.0);
+                //return vec4f(vec3f(.01/min_dist), 1.0);
             }`
         })
 
@@ -615,11 +740,11 @@ export class Renderer {
         });
         
         this.grid_buffer = device.createBuffer({
-            size: grid_size * max_particles_per_cell * 4,
+            size: MAX_GRID_SIZE*MAX_GRID_SIZE*MAX_GRID_SIZE * max_particles_per_cell * 4,
             usage: GPUBufferUsage.STORAGE,
         });
         this.grid_count_buffer = device.createBuffer({
-            size: grid_size * 4,
+            size: MAX_GRID_SIZE*MAX_GRID_SIZE*MAX_GRID_SIZE * 4,
             usage: GPUBufferUsage.STORAGE,
         });
 
@@ -734,8 +859,8 @@ export class Renderer {
             },
         };
         
-        if (simulate)
         {
+            create_grid();
             const constants = new ArrayBuffer(32);
             const floats    = new Float32Array(constants);
             const ints      = new Uint32Array(constants);
@@ -743,10 +868,10 @@ export class Renderer {
             ints  [1] = grid_size_y;
             ints  [2] = grid_size_z;
             ints  [3] = this.instance_count;
-            floats[4] = 0.0001;
-            floats[5] = influence_radius;
+            floats[4] = simulate ? 0.00005 : 0;
+            floats[5] = simulation.influence_radius;
             floats[6] = simulation.target_density;
-            floats[7] = pressure_multiplier;
+            floats[7] = simulation.pressure_multiplier;
             device.queue.writeBuffer(this.simulation_buffer, 0, constants);
             
             for (let i = 0; i < 1; i++) {
@@ -759,7 +884,7 @@ export class Renderer {
                 cmd.setPipeline(this.compute.find_neighbors.pipeline);
                 cmd.setBindGroup(0, this.compute.find_neighbors.bind_group);
                 cmd.dispatchWorkgroups(Math.ceil(this.instance_count / 64));
-/*
+
                 cmd.setPipeline(this.compute.calculate_density.pipeline);
                 cmd.setBindGroup(0, this.compute.calculate_density.bind_group);
                 cmd.dispatchWorkgroups(Math.ceil(this.instance_count / 64));
@@ -767,7 +892,7 @@ export class Renderer {
                 cmd.setPipeline(this.compute.apply_forces.pipeline);
                 cmd.setBindGroup(0, this.compute.apply_forces.bind_group);
                 cmd.dispatchWorkgroups(Math.ceil(this.instance_count / 64));
-*/
+
                 cmd.setPipeline(this.compute.update.pipeline);
                 cmd.setBindGroup(0, this.compute.update.bind_group);
                 cmd.dispatchWorkgroups(Math.ceil(this.instance_count / 64));
