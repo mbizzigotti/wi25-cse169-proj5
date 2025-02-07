@@ -33,18 +33,18 @@ function load(key, obj) {
     else save(key, obj);
 }
 
-const particleRadius = 0.01;
-const vertexSize   = 3 * 4;
-const instanceSize = 4 * 8;
-const MAX_PARTICLES = 200000;
-
+const particleRadius         = 0.005;
+const vertexSize             = 3 * 4;
+const instanceSize           = 4 * 8;
+const MAX_PARTICLES          = 200000;
 const max_particles_per_cell = 16;
 
 export const simulation = {
-    influence_radius    : 0.3,
-    target_density      : 1.0/0.007,
-    pressure_multiplier : 1,
+    influence_radius    : 0.042,
+    target_density      : 1800,
+    pressure_multiplier : 200000,
 };
+let simulation_time = 0.0;
 
 export function modify_simulation_callback() {
     save("sim", simulation);
@@ -63,14 +63,6 @@ function create_grid() {
     grid_size_y = Math.floor(2.0 / simulation.influence_radius);
     grid_size_z = Math.floor(2.0 / simulation.influence_radius);
     grid_size = grid_size_x * grid_size_y * grid_size_z;
-}
-
-const test = []
-for (let i = 0; i < 200; ++i) {
-    const x = Math.random();
-    test.push((x*2-1)*1.0, (Math.random()*2-1)*1.0, 0.01, x);
-    //test.push((Math.random()*2-1)*5,(Math.random()*2-1)*5,0,0);
-    test.push(0,0,0,0);
 }
 
 export class Renderer {
@@ -138,14 +130,15 @@ export class Renderer {
 
             @fragment
             fn fragment_main(fragData: VertexOutput) -> @location(0) vec4f {
-                //return vec4f(heatmapGradient(fragData.value * 0.005) * 1, 1.0);
-                return vec4f(0.0);
+                return vec4f(heatmapGradient(fragData.value * 0.015) * 1, 1.0);
+                //return vec4f(1.0);
             }
 
             struct Simulation_Constants {
                 grid_size           : vec3u,
                 particle_count      : u32,
                 dt                  : f32,
+                time                : f32,
                 influence_radius    : f32,
                 target_density      : f32,
                 pressure_multiplier : f32,
@@ -226,9 +219,8 @@ export class Renderer {
 
             fn smoothing_kernel_grad(dist: f32) -> f32 {
                 if dist >= in.influence_radius { return 0; }
-                let f = in.influence_radius * in.influence_radius - dist * dist;
-                let scale = -24 / (PI * pow(in.influence_radius, 8));
-                return scale * dist * f * f;   
+                let scale = 12 / (pow(in.influence_radius, 4) * PI);
+                return (dist - in.influence_radius) * scale;
             }
 
             fn density_to_pressure(density: f32) -> f32 {
@@ -273,7 +265,7 @@ export class Renderer {
                         let other_idx = grid.data[grid_index*max_particles_per_cell + u32(i)];
                         let other = data.particles[other_idx];
                         let dist = length(other.position - particle.position);
-                        particle.density += viscosity_smoothing_kernel(dist);
+                        particle.density += smoothing_kernel(dist);
                     }
                 }
                 }
@@ -318,16 +310,16 @@ export class Renderer {
                         let pressure = shared_pressure(other.density, particle.density);
                         force += grad * pressure / other.density;
 
-                        //let viscosity = viscosity_smoothing_kernel(distance);
-                        //force += 100.0 * (other.velocity - particle.velocity) * viscosity;
+                        let viscosity = viscosity_smoothing_kernel(distance);
+                        force += 1000.0 * (other.velocity - particle.velocity) * viscosity;
                     }
                 }
                 }
                 }
 
-                //particle.velocity += gravity;
-                particle.velocity = force / particle.density;
-                //particle.velocity += in.dt * force / particle.density;
+                particle.velocity += gravity;
+                //particle.velocity = force / particle.density;
+                particle.velocity += in.dt * force / particle.density;
                 
                 //if false {
                 //    let grid_index = coord_to_index(vec3u(coord));
@@ -348,18 +340,19 @@ export class Renderer {
             // Function to handle collisions and keep particles within bounds
             fn resolve_collision(pos: vec3f, vel: vec3f) -> Collision_Result {
                 var result = Collision_Result(pos, vel);
+                const bound = 0.4;
 
-                if (result.pos.x < -1.0 || result.pos.x > 1.0) {
+                if (result.pos.x < -bound + 0.2*sin(in.time*10) || result.pos.x > bound) {
                     result.vel.x *= -damping_factor;
-                    result.pos.x = clamp(result.pos.x, -1.0, 1.0);
+                    result.pos.x = clamp(result.pos.x, -bound + 0.2*sin(in.time*10), bound);
                 }
-                if (result.pos.y < -1.0 || result.pos.y > 1.0) {
+                if (result.pos.y < -bound || result.pos.y > 1.0) {
                     result.vel.y *= -damping_factor;
-                    result.pos.y = clamp(result.pos.y, -1.0, 1.0);
+                    result.pos.y = clamp(result.pos.y, -bound, 1.0);
                 }
-                if (result.pos.z < -1.0 || result.pos.z > 1.0) {
+                if (result.pos.z < -bound || result.pos.z > bound) {
                     result.vel.z *= -damping_factor;
-                    result.pos.z = clamp(result.pos.z, -1.0, 1.0);
+                    result.pos.z = clamp(result.pos.z, -bound, bound);
                 }
 
                 return result;
@@ -373,13 +366,14 @@ export class Renderer {
 
                 // Update position
                 particle.position += particle.velocity * in.dt;
-                //particle.density  *= 0.0005;
-                //particle.density  *= 100.0;
 
                 // Resolve collisions
                 let result = resolve_collision(particle.position, particle.velocity);
                 particle.position = result.pos;
                 particle.velocity = result.vel;
+
+                // Density is useless at this point, this is for visualization
+                particle.density = length(particle.velocity);
 
                 data.particles[idx] = particle;
             }
@@ -594,16 +588,16 @@ export class Renderer {
                 
                 if n > 16 { return vec4f(1, 1, 0, 1); }
 
-                var color: vec3f;
-                if (density > in.target_density) {
-                    color = mix(vec3(1.0), vec3(1.0, 0.0, 0.0), (density - in.target_density) * 0.01);
-                }
-                else {
-                    color = mix(vec3(1.0), vec3(0.0, 0.0, 1.0), (in.target_density - density) * 0.01);
-                }
-                return vec4f(color, 1.0);
+                //var color: vec3f;
+                //if (density > in.target_density) {
+                //    color = mix(vec3(1.0), vec3(1.0, 0.0, 0.0), (density - in.target_density) * 0.01);
+                //}
+                //else {
+                //    color = mix(vec3(1.0), vec3(0.0, 0.0, 1.0), (in.target_density - density) * 0.01);
+                //}
+                //return vec4f(color, 1.0);
 
-                //return vec4f(heatmapGradient(density * 0.005), 1.0);
+                return vec4f(heatmapGradient(density * 0.0004), 1.0);
                 //return vec4f(density, force.xy*0.3, 1.0);
                 //return vec4f(vec3f(.01/min_dist), 1.0);
             }`
@@ -735,7 +729,7 @@ export class Renderer {
 
         // =====================================> COMPUTE <=====================================
         this.simulation_buffer = device.createBuffer({
-            size: 32,
+            size: 48,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         
@@ -831,6 +825,12 @@ export class Renderer {
     }
 
     temp() {
+        const test = []
+        for (let i = 0; i < 10000; ++i) {
+            const x = Math.random();
+            test.push((x*2-1)*0.4, (Math.random()*2-1)*0.4, (Math.random()*2-1)*0.4, x);
+            test.push(0,0,0,0);
+        }
         const instanceArray = new Float32Array(test);
         device.queue.writeBuffer(this.instance_buffer, 0, instanceArray, 0, instanceArray.length);
         this.instance_count = instanceArray.byteLength / instanceSize;
@@ -861,20 +861,23 @@ export class Renderer {
         
         {
             create_grid();
-            const constants = new ArrayBuffer(32);
+            const constants = new ArrayBuffer(48);
             const floats    = new Float32Array(constants);
             const ints      = new Uint32Array(constants);
+            const dt = simulate ? 0.00005 : 0;
             ints  [0] = grid_size_x;
             ints  [1] = grid_size_y;
             ints  [2] = grid_size_z;
             ints  [3] = this.instance_count;
-            floats[4] = simulate ? 0.00005 : 0;
-            floats[5] = simulation.influence_radius;
-            floats[6] = simulation.target_density;
-            floats[7] = simulation.pressure_multiplier;
+            floats[4] = dt;
+            floats[5] = simulation_time;
+            floats[6] = simulation.influence_radius;
+            floats[7] = simulation.target_density;
+            floats[8] = simulation.pressure_multiplier;
             device.queue.writeBuffer(this.simulation_buffer, 0, constants);
+            simulation_time += 100.0 * dt;
             
-            for (let i = 0; i < 1; i++) {
+            for (let i = 0; i < 4; i++) {
                 const cmd = command_encoder.beginComputePass();
                 
                 cmd.setPipeline(this.compute.clear_grid.pipeline);
@@ -903,9 +906,9 @@ export class Renderer {
         {
             const cmd = command_encoder.beginRenderPass(renderPassDescriptor);
 
-            cmd.setPipeline(this.debug_pipeline);
-            cmd.setBindGroup(0, this.debug_uniforms);
-            cmd.draw(4);
+            //cmd.setPipeline(this.debug_pipeline);
+            //cmd.setBindGroup(0, this.debug_uniforms);
+            //cmd.draw(4);
 
             cmd.setPipeline(this.render_pipeline);
             cmd.setBindGroup(0, this.uniform_bind_group);

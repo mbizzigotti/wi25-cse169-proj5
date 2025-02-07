@@ -313,7 +313,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
 
     renderer.create();
 
-    add_slider(simulation, "target_density", 0, 100);
+    add_slider(simulation, "target_density", 500, 2000);
     add_slider(simulation, "influence_radius", 0.001, 0.5);
     add_slider(simulation, "pressure_multiplier", 1, 50);
   
