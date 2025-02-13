@@ -12,7 +12,6 @@ const renderer = new Renderer();
 let c = null; // functions we defined in C!
 let c_bytes = null;
 let c_floats = null;
-let want_exit = false;
 
 const HALF_PI = 1.5707963267948966;
 
@@ -46,65 +45,12 @@ function c_matrix4(address) {
 //////////////////////////////////////////////////////////////////////////////
 // Functions to export to C
 
-function log(priority, message) {
-    if (priority < 0 || priority > 2) return;
-    const log = [console.info, console.warn, console.error];
-    log[priority](c_string(message));
-}
-
-function log_value(value) {
-    console.log(value);
-}
-
-function panic(message) {
-    console.error(c_string(message));
-    want_exit = true;
-}
-
 function sin(x) {
     return Math.sin(x);
 }
 
 function cos(x) {
     return Math.cos(x);
-}
-
-function sqrt(x) {
-    return Math.sqrt(x);
-}
-
-const particles = []
-const particle_size = 4; // 3 x position
-
-function gfx_add_particle(x, y, z, c) {
-    particles.push(x, y, z, c);
-}
-
-const debug_elements = [];
-let debug_next = 0;
-
-function debug_info(format, args) {
-    if (debug_next >= debug_elements.length) {
-        const debug = document.getElementById("debug");
-        const debug_text = document.createElement("div");
-        debug_text.className = "debug-text";
-        debug_elements.push(debug_text);
-        debug.appendChild(debug_text)
-    }
-
-    const base = args >> 2; // want an index (float = 4 bytes)
-    const array = c_floats.slice(base, base + 16); // estimate count
-    
-    const format_string = (format, args) => {
-        let argIndex = 0;
-        return format.replace(/{}/g, () => {
-            if (argIndex >= args.length) return "{empty}";
-            return args[argIndex++];
-        });
-    };
-
-    debug_elements[debug_next].textContent = format_string(c_string(format), array);
-    debug_next += 1;
 }
 
 function add_slider(obj, name, min, max) {
@@ -185,21 +131,6 @@ const camera = {
     distance: 3.0,
 };
 
-let prev = null;
-function loop(timestamp) {
-    if (prev !== null) {
-        const dt = (timestamp - prev)*0.001;
-        const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline, camera.distance));
-
-        renderer.render(view_proj, simulate);
-        
-        document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
-        debug_next = 0;
-    }
-    prev = timestamp;
-    if (!want_exit) window.requestAnimationFrame(loop);
-}
-
 function clamp(x, a, b) {
     return x < a ? a : x > b ? b : x;
 }
@@ -214,24 +145,15 @@ let Touching = false;
 
 WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     env: {
-        log,
-        panic,
         sin,
         cos,
-        sqrt,
-        gfx_add_particle,
-        debug_info,
-        add_slider,
-        log_value,
     }
-}).then((wasm) => {
+}).then(async (wasm) => {
     c = wasm.instance.exports; // Exported C Functions
     c_bytes  = new Uint8Array(wasm.instance.exports.memory.buffer);
     c_floats = new Float32Array(wasm.instance.exports.memory.buffer);
 
     document.addEventListener('keydown', (e) => {
-        c.on_key(e.key.charCodeAt(), 1);
-
         if (e.key == 'r') {
             renderer.create_particles();
         }
@@ -277,7 +199,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         touch_state.y = e.touches[0].clientY;
         Touching = true;
     });
-    document.addEventListener('touchend',   (e) => { Touching = false; });
+    document.addEventListener('touchend', (e) => { Touching = false; });
 
     document.addEventListener('touchmove', (e) => {
         const maxDelta = 100;
@@ -298,19 +220,7 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
         camera.distance -= 0.01 * e.deltaY;
     });
 
-    /*
-    sphere = {
-        vertex_buffer: create_vertex_buffer({
-            v_position: vertices,
-        //    i_color: [],
-            i_offset: [],
-        }),
-        index_buffer: create_index_buffer(indices),
-        index_count: indices.length,
-    };
-    */
-
-    renderer.create();
+    await renderer.create();
 
     add_slider(simulation, "target_density", 2000, 8000);
     add_slider(simulation, "influence_radius", 0.001, 0.5);
@@ -318,5 +228,23 @@ WebAssembly.instantiateStreaming(fetch('bin/main.wasm'), {
     add_slider(simulation, "particle_count", 5000, 50000);
     add_slider(simulation, "wave_speed", 0.0, 2.0);
   
+    let prev = null;
+
+    function loop(timestamp) {
+        if (prev === undefined) prev = timestamp;
+
+        const dt = (timestamp - prev)*0.001;
+
+        const view_proj = c_matrix4(c.make_view_projection(camera.azimuth, camera.incline, camera.distance));
+
+        renderer.render(view_proj, simulate);
+            
+        document.getElementById("FPS").textContent = `FPS: ${(1.0 / dt).toFixed(1)}`;
+
+        prev = timestamp;
+
+        window.requestAnimationFrame(loop);
+    }
+
     window.requestAnimationFrame(loop);
 });

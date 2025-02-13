@@ -16,7 +16,7 @@ static inline vec3  vec3_sub (vec3 const a, vec3  const b) { return (vec3) { a.x
 static inline vec3  vec3_mul (vec3 const a, vec3  const b) { return (vec3) { a.x * b.x, a.y * b.y, a.z * b.z }; }
 static inline vec3  vec3_mul1(vec3 const a, float const c) { return (vec3) { a.x * c, a.y * c, a.z * c }; }
 static inline float vec3_dot (vec3 const a, vec3 const b)  { return a.x * b.x + a.y * b.y + a.z * b.z; }
-static inline float vec3_len (vec3 const a)                { return sqrt(vec3_dot(a, a)); }
+//static inline float vec3_len (vec3 const a)                { return sqrt(vec3_dot(a, a)); }
 
 void mat4_zero(float* dst) {
     for (int i = 0; i < 16; ++i)
